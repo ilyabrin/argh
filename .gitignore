@@ -1,0 +1,50 @@
+# Compiled files
+*.exe
+*.o
+*.obj
+*.lib
+*.dll
+*.so
+*.dylib
+*.a
+*.out
+
+# Build directories
+build/
+out/
+bin/
+obj/
+
+# IDE files
+.vscode/
+.vs/
+*.sln
+*.vcxproj*
+*.user
+*.suo
+*.ide/
+*.sublime-*
+
+# Test artifacts
+*.gcno
+*.gcda
+*.gcov
+*.profraw
+*.profdata
+coverage/
+
+# Temporary files
+*.tmp
+*.temp
+*~
+*.swp
+*.swo
+*.bak
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs
+*.log
