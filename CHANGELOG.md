@@ -6,6 +6,22 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-24
+
+Commands, suggestions, custom types and rules. No breaking changes to the v0.2 API.
+
+### Added
+
+- **Commands**, like `git remote add`: `argh_commands` with `ARGH_CMD` and `ARGH_CMD_GROUP` tables, nested up to `ARGH_MAX_DEPTH` levels. Options of the parser are global and work before and after the command name.
+- `argh_command` returns the selected command, `argh_run` calls its handler.
+- Help for every command level, with a `Global options` section, and `tool help <command>`.
+- A missing command is an error that lists the available commands.
+- "Did you mean" suggestions for mistyped long options and commands: `unknown option '--verbsoe' (did you mean '--verbose'?)`. Also available as `argh_error.suggestion`. `ARGH_NO_SUGGEST` removes them.
+- **Your own value types**: describe a type once as a constant `argh_type` (value name, parse function, optional format function) and use it with `argh_custom` / `ARGH_CUSTOM`. The parse function's reason appears in the error message, and the format function lets help show the default.
+- **Rules between options**, referring to variables: `ARGH_AT_MOST_ONE`, `ARGH_EXACTLY_ONE`, `ARGH_AT_LEAST_ONE`, `ARGH_REQUIRES`, set with `argh_rules`. Errors like `options '--json' and '--csv' cannot be used together`. Programs that don't call `argh_rules` don't link the rule checker.
+- **Validators** for anything rules can't express: `argh_set_validator` and `argh_fail(p, "message")`.
+- `ARGH_NO_COMMANDS` removes command support, so programs without commands keep the code size of v0.2.
+
 ## [0.2.0] - 2026-09-24
 
 v0.2 replaces the API. See [Upgrading from 0.1](README.md#upgrading-from-01).
@@ -64,6 +80,7 @@ Compared with the code before the public release:
 
 - `argh_set_description` and `argh_set_help_width`, which had no effect.
 
-[Unreleased]: https://github.com/ilyabrin/argh/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/ilyabrin/argh/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/ilyabrin/argh/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/ilyabrin/argh/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/ilyabrin/argh/releases/tag/v0.1.0

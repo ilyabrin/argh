@@ -91,6 +91,13 @@ static void setup(argh_parser *p)
     argh_set_writer(p, capture, NULL);
 }
 
+/* Expected suffix of an error message, empty when suggestions are off */
+#ifdef ARGH_NO_SUGGEST
+#define DID_YOU_MEAN(name) ""
+#else
+#define DID_YOU_MEAN(name) " (did you mean '" name "'?)"
+#endif
+
 /* The one-line error message of the last parse */
 static const char *error_text(const argh_parser *p)
 {
@@ -610,8 +617,9 @@ TEST(test_unknown_long)
 
     ASSERT_FALSE(argh_parse(&p, argc, argv));
     ASSERT_EQ(argh_last_error(&p)->argv_index, 1);
-    ASSERT_STR_EQ(error_text(&p), "unknown option '--verbos'");
-    ASSERT_STR_EQ(err_text, "prog: unknown option '--verbos'\nTry 'prog --help' for more information.\n");
+    ASSERT_STR_EQ(error_text(&p), "unknown option '--verbos'" DID_YOU_MEAN("--verbose"));
+    ASSERT_STR_EQ(err_text, "prog: unknown option '--verbos'" DID_YOU_MEAN("--verbose") "\n"
+                            "Try 'prog --help' for more information.\n");
     ASSERT_EQ(argh_exit_code(&p), 2);
 }
 
@@ -781,6 +789,8 @@ TEST(test_config_no_auto_help_frees_h)
     ASSERT_STR_EQ(host, "example.com");
 }
 
+/* Definition checks run only without NDEBUG */
+#ifndef NDEBUG
 TEST(test_config_duplicate)
 {
     ARGV0();
@@ -793,6 +803,7 @@ TEST(test_config_duplicate)
     ASSERT_FALSE(argh_parse(&p, argc, argv));
     ASSERT_STR_EQ(error_text(&p), "configuration error: option defined twice (--verbose)");
 }
+#endif
 
 TEST(test_config_builder_overflow)
 {
@@ -1089,6 +1100,884 @@ TEST(test_parse_twice_resets_state)
     ASSERT_TRUE(argh_given(&p, &verbose));
 }
 
+/* ============================================================================
+ * Custom types
+ * ============================================================================ */
+
+/* A size with an optional K/M/G suffix: 512, 64K, 10M, 1G */
+static const char *parse_size(const char *text, void *target)
+{
+    unsigned long long value = 0;
+    const char *s = text;
+    if (*s < '0' || *s > '9')
+        return "expected a size like 512K, 10M or 1G";
+    for (; *s >= '0' && *s <= '9'; s++)
+        value = value * 10 + (unsigned long long)(*s - '0');
+    switch (*s)
+    {
+    case 'K': value <<= 10; s++; break;
+    case 'M': value <<= 20; s++; break;
+    case 'G': value <<= 30; s++; break;
+    default: break;
+    }
+    if (*s)
+        return "expected a size like 512K, 10M or 1G";
+    *(unsigned long long *)target = value;
+    return NULL;
+}
+
+static bool format_size(const void *target, char *buf, size_t size)
+{
+    unsigned long long v = *(const unsigned long long *)target;
+    if (v && v % (1ull << 20) == 0)
+        snprintf(buf, size, "%lluM", v >> 20);
+    else if (v && v % (1ull << 10) == 0)
+        snprintf(buf, size, "%lluK", v >> 10);
+    else
+        snprintf(buf, size, "%llu", v);
+    return true;
+}
+
+static const argh_type size_type = {"<size>", parse_size, format_size};
+
+/* host:port, into a struct */
+typedef struct
+{
+    char host[64];
+    int port;
+} endpoint;
+
+static const char *parse_endpoint(const char *text, void *target)
+{
+    endpoint *ep = (endpoint *)target;
+    const char *colon = strrchr(text, ':');
+    size_t host_len;
+    long port;
+    char *end;
+    if (!colon || colon == text)
+        return "expected host:port";
+    host_len = (size_t)(colon - text);
+    if (host_len >= sizeof(ep->host))
+        return "host name too long";
+    port = strtol(colon + 1, &end, 10);
+    if (*end || end == colon + 1 || port < 1 || port > 65535)
+        return "port must be 1-65535";
+    memcpy(ep->host, text, host_len);
+    ep->host[host_len] = '\0';
+    ep->port = (int)port;
+    return NULL;
+}
+
+/* No format function: help shows no default */
+static const argh_type endpoint_type = {"<host:port>", parse_endpoint, NULL};
+
+TEST(test_custom_builder)
+{
+    ARGV("--max-size", "10M", "-c", "db.local:5432");
+    unsigned long long max_size = 0;
+    endpoint connect = {"localhost", 80};
+    argh_parser p;
+    setup(&p);
+    argh_custom(&p, 's', "max-size", &max_size, &size_type, "Largest file to keep");
+    argh_custom(&p, 'c', "connect", &connect, &endpoint_type, "Server to connect to");
+
+    ASSERT_TRUE(argh_parse(&p, argc, argv));
+    ASSERT_TRUE(max_size == 10ull << 20);
+    ASSERT_STR_EQ(connect.host, "db.local");
+    ASSERT_EQ(connect.port, 5432);
+    ASSERT_TRUE(argh_given(&p, &connect));
+}
+
+static unsigned long long t_cache_size = 64ull << 10;
+
+TEST(test_custom_table)
+{
+    static const argh_opt opts[] = {
+        ARGH_CUSTOM(0, "cache", &t_cache_size, &size_type, "Cache size", ARGH_ONCE),
+        ARGH_END,
+    };
+    ARGV("--cache=1G");
+    argh_parser p;
+    setup(&p);
+    argh_table(&p, opts);
+
+    ASSERT_EQ(opts[0].flags, ARGH_ONCE);
+    ASSERT_TRUE(argh_parse(&p, argc, argv));
+    ASSERT_TRUE(t_cache_size == 1ull << 30);
+}
+
+TEST(test_custom_error_uses_reason)
+{
+    ARGV("--max-size", "10Q");
+    unsigned long long max_size = 5;
+    argh_parser p;
+    setup(&p);
+    argh_custom(&p, 's', "max-size", &max_size, &size_type, "");
+
+    ASSERT_FALSE(argh_parse(&p, argc, argv));
+    ASSERT_EQ(argh_last_error(&p)->code, ARGH_E_INVALID_VALUE);
+    ASSERT_STR_EQ(error_text(&p), "invalid value '10Q' for '--max-size': expected a size like 512K, 10M or 1G");
+    ASSERT_TRUE(max_size == 5); /* a failed parse must not touch the variable */
+}
+
+TEST(test_custom_struct_error)
+{
+    ARGV("-c", "db.local:99999");
+    endpoint connect = {"localhost", 80};
+    argh_parser p;
+    setup(&p);
+    argh_custom(&p, 'c', "connect", &connect, &endpoint_type, "");
+
+    ASSERT_FALSE(argh_parse(&p, argc, argv));
+    ASSERT_STR_EQ(error_text(&p), "invalid value 'db.local:99999' for '-c': port must be 1-65535");
+}
+
+TEST(test_custom_help)
+{
+    ARGV("--help");
+    unsigned long long max_size = 64ull << 20;
+    endpoint connect = {"localhost", 80};
+    argh_parser p;
+    setup(&p);
+    argh_custom(&p, 's', "max-size", &max_size, &size_type, "Largest file to keep");
+    argh_custom(&p, 'c', "connect", &connect, &endpoint_type, "Server to connect to");
+
+    ASSERT_FALSE(argh_parse(&p, argc, argv));
+    ASSERT_TRUE(strstr(out_text, "  -s, --max-size <size>      Largest file to keep (default: 64M)\n") != NULL);
+    ASSERT_TRUE(strstr(out_text, "  -c, --connect <host:port>  Server to connect to\n") != NULL);
+}
+
+TEST(test_custom_required)
+{
+    ARGV0();
+    endpoint connect = {"", 0};
+    argh_parser p;
+    setup(&p);
+    argh_required(argh_custom(&p, 'c', "connect", &connect, &endpoint_type, ""));
+
+    ASSERT_FALSE(argh_parse(&p, argc, argv));
+    ASSERT_STR_EQ(error_text(&p), "missing required option '--connect'");
+}
+
+TEST(test_custom_config_without_type)
+{
+    ARGV0();
+    unsigned long long max_size = 0;
+    argh_parser p;
+    setup(&p);
+    argh_custom(&p, 's', "max-size", &max_size, NULL, "");
+
+    ASSERT_FALSE(argh_parse(&p, argc, argv));
+    ASSERT_STR_EQ(error_text(&p),
+                  "configuration error: custom option has no argh_type with a parse function (--max-size)");
+}
+
+/* ============================================================================
+ * Rules and validators
+ * ============================================================================ */
+
+static bool r_json, r_yaml, r_csv, r_stdin, r_all;
+static const char *r_input, *r_key, *r_cert, *r_package;
+
+static const argh_rule r_rules[] = {
+    ARGH_AT_MOST_ONE(&r_json, &r_yaml, &r_csv),
+    ARGH_EXACTLY_ONE(&r_input, &r_stdin),
+    ARGH_REQUIRES(&r_key, &r_cert),
+    ARGH_RULES_END,
+};
+
+/* An export tool: one output format, one input source, TLS key needs a cert */
+static argh_err parse_with_rules(int argc, char **argv, argh_parser *p)
+{
+    r_json = r_yaml = r_csv = r_stdin = false;
+    r_input = r_key = r_cert = NULL;
+    setup(p);
+    argh_flag(p, 0, "json", &r_json, "");
+    argh_flag(p, 0, "yaml", &r_yaml, "");
+    argh_flag(p, 0, "csv", &r_csv, "");
+    argh_string(p, 'i', "input", &r_input, "");
+    argh_flag(p, 0, "stdin", &r_stdin, "");
+    argh_string(p, 0, "tls-key", &r_key, "");
+    argh_string(p, 0, "tls-cert", &r_cert, "");
+    argh_rules(p, r_rules);
+    argh_parse(p, argc, argv);
+    return argh_last_error(p)->code;
+}
+
+TEST(test_rules_satisfied)
+{
+    ARGV("--json", "--input", "data.db", "--tls-key", "k.pem", "--tls-cert", "c.pem");
+    argh_parser p;
+    ASSERT_EQ(parse_with_rules(argc, argv, &p), ARGH_E_NONE);
+}
+
+TEST(test_rule_at_most_one)
+{
+    ARGV("--json", "--stdin", "--csv");
+    argh_parser p;
+    ASSERT_EQ(parse_with_rules(argc, argv, &p), ARGH_E_CONFLICT);
+    ASSERT_STR_EQ(error_text(&p), "options '--json' and '--csv' cannot be used together");
+    ASSERT_EQ(argh_exit_code(&p), 2);
+}
+
+TEST(test_rule_exactly_one_missing)
+{
+    ARGV("--yaml");
+    argh_parser p;
+    ASSERT_EQ(parse_with_rules(argc, argv, &p), ARGH_E_ONE_REQUIRED);
+    ASSERT_STR_EQ(error_text(&p), "one of '--input' or '--stdin' is required");
+}
+
+TEST(test_rule_exactly_one_both)
+{
+    ARGV("--stdin", "-i", "x");
+    argh_parser p;
+    ASSERT_EQ(parse_with_rules(argc, argv, &p), ARGH_E_CONFLICT);
+    ASSERT_STR_EQ(error_text(&p), "options '--input' and '--stdin' cannot be used together");
+}
+
+TEST(test_rule_requires)
+{
+    ARGV("--stdin", "--tls-key", "k.pem");
+    argh_parser p;
+    ASSERT_EQ(parse_with_rules(argc, argv, &p), ARGH_E_REQUIRES);
+    ASSERT_STR_EQ(error_text(&p), "option '--tls-key' requires '--tls-cert'");
+}
+
+TEST(test_rule_requires_only_when_given)
+{
+    ARGV("--stdin", "--tls-cert", "c.pem");
+    argh_parser p;
+    ASSERT_EQ(parse_with_rules(argc, argv, &p), ARGH_E_NONE);
+}
+
+TEST(test_rule_at_least_one)
+{
+    static const argh_rule rules[] = {ARGH_AT_LEAST_ONE(&r_all, &r_package), ARGH_RULES_END};
+    char *none[] = {(char *)"prog", NULL};
+    char *both[] = {(char *)"prog", (char *)"--all", (char *)"-p", (char *)"core", NULL};
+    argh_parser p;
+
+    r_all = false;
+    r_package = NULL;
+    setup(&p);
+    argh_flag(&p, 0, "all", &r_all, "");
+    argh_string(&p, 'p', "package", &r_package, "");
+    argh_rules(&p, rules);
+    ASSERT_FALSE(argh_parse(&p, 1, none));
+    ASSERT_STR_EQ(error_text(&p), "one of '--all' or '--package' is required");
+    ASSERT_TRUE(argh_parse(&p, 4, both));
+}
+
+TEST(test_rule_three_names)
+{
+    static const argh_rule rules[] = {ARGH_EXACTLY_ONE(&r_json, &r_yaml, &r_csv), ARGH_RULES_END};
+    ARGV0();
+    argh_parser p;
+    setup(&p);
+    argh_flag(&p, 0, "json", &r_json, "");
+    argh_flag(&p, 0, "yaml", &r_yaml, "");
+    argh_flag(&p, 0, "csv", &r_csv, "");
+    argh_rules(&p, rules);
+
+    ASSERT_FALSE(argh_parse(&p, argc, argv));
+    ASSERT_STR_EQ(error_text(&p), "one of '--json', '--yaml' or '--csv' is required");
+}
+
+TEST(test_rule_config_one_variable)
+{
+    static const argh_rule rules[] = {ARGH_AT_MOST_ONE(&r_json), ARGH_RULES_END};
+    ARGV0();
+    argh_parser p;
+    setup(&p);
+    argh_flag(&p, 0, "json", &r_json, "");
+    argh_rules(&p, rules);
+
+    ASSERT_FALSE(argh_parse(&p, argc, argv));
+    ASSERT_STR_EQ(error_text(&p), "configuration error: a rule needs at least two variables");
+}
+
+/* Definition checks run only without NDEBUG */
+#ifndef NDEBUG
+TEST(test_rule_config_unbound_variable)
+{
+    static int not_an_option;
+    static const argh_rule rules[] = {ARGH_AT_MOST_ONE(&r_json, &not_an_option), ARGH_RULES_END};
+    ARGV0();
+    argh_parser p;
+    setup(&p);
+    argh_flag(&p, 0, "json", &r_json, "");
+    argh_rules(&p, rules);
+
+    ASSERT_FALSE(argh_parse(&p, argc, argv));
+    ASSERT_STR_EQ(error_text(&p), "configuration error: a rule refers to a variable that no option is bound to");
+}
+#endif
+
+#ifndef ARGH_NO_COMMANDS
+/* A rule on a command's options only applies when that command is selected */
+TEST(test_rule_skipped_for_other_command)
+{
+    static bool fast, safe;
+    static const argh_opt run_opts[] = {
+        ARGH_FLAG(0, "fast", &fast, ""),
+        ARGH_FLAG(0, "safe", &safe, ""),
+        ARGH_END,
+    };
+    static const argh_cmd cmds[] = {
+        ARGH_CMD("run", "", run_opts),
+        ARGH_CMD("list", "", NULL),
+        ARGH_CMD_END,
+    };
+    static const argh_rule rules[] = {ARGH_EXACTLY_ONE(&fast, &safe), ARGH_RULES_END};
+    char *list[] = {(char *)"prog", (char *)"list", NULL};
+    char *run[] = {(char *)"prog", (char *)"run", NULL};
+    argh_parser p;
+
+    setup(&p);
+    argh_commands(&p, cmds);
+    argh_rules(&p, rules);
+    ASSERT_TRUE(argh_parse(&p, 2, list));
+    ASSERT_FALSE(argh_parse(&p, 2, run));
+    ASSERT_STR_EQ(error_text(&p), "one of '--fast' or '--safe' is required");
+}
+#endif
+
+/* ----------------------------------------------------------------------------
+ * Validators
+ * ---------------------------------------------------------------------------- */
+
+typedef struct
+{
+    int min, max;
+    int calls;
+} range;
+
+static bool check_range(argh_parser *p, void *ctx)
+{
+    range *r = (range *)ctx;
+    r->calls++;
+    if (r->min > r->max)
+        return argh_fail(p, "--min must not be greater than --max");
+    return true;
+}
+
+TEST(test_validator)
+{
+    ARGV("--min", "5", "--max", "3");
+    range r = {0, 10, 0};
+    argh_parser p;
+    setup(&p);
+    argh_int(&p, 0, "min", &r.min, "");
+    argh_int(&p, 0, "max", &r.max, "");
+    argh_set_validator(&p, check_range, &r);
+
+    ASSERT_FALSE(argh_parse(&p, argc, argv));
+    ASSERT_EQ(r.calls, 1);
+    ASSERT_EQ(argh_last_error(&p)->code, ARGH_E_CUSTOM);
+    ASSERT_EQ(argh_exit_code(&p), 2);
+    ASSERT_STR_EQ(err_text, "prog: --min must not be greater than --max\n"
+                            "Try 'prog --help' for more information.\n");
+}
+
+TEST(test_validator_passes)
+{
+    ARGV("--min", "2");
+    range r = {0, 10, 0};
+    argh_parser p;
+    setup(&p);
+    argh_int(&p, 0, "min", &r.min, "");
+    argh_int(&p, 0, "max", &r.max, "");
+    argh_set_validator(&p, check_range, &r);
+
+    ASSERT_TRUE(argh_parse(&p, argc, argv));
+    ASSERT_EQ(r.calls, 1);
+}
+
+static bool reject_silently(argh_parser *p, void *ctx)
+{
+    (void)p;
+    (void)ctx;
+    return false;
+}
+
+TEST(test_validator_without_message)
+{
+    ARGV0();
+    argh_parser p;
+    setup(&p);
+    argh_set_validator(&p, reject_silently, NULL);
+
+    ASSERT_FALSE(argh_parse(&p, argc, argv));
+    ASSERT_STR_EQ(error_text(&p), "invalid arguments");
+}
+
+TEST(test_validator_not_called_after_errors)
+{
+    ARGV("--min", "x");
+    range r = {0, 10, 0};
+    argh_parser p;
+    setup(&p);
+    argh_int(&p, 0, "min", &r.min, "");
+    argh_set_validator(&p, check_range, &r);
+
+    ASSERT_FALSE(argh_parse(&p, argc, argv));
+    ASSERT_EQ(argh_last_error(&p)->code, ARGH_E_INVALID_VALUE);
+    ASSERT_EQ(r.calls, 0);
+}
+
+TEST(test_validator_not_called_for_help)
+{
+    ARGV("--help");
+    range r = {0, 10, 0};
+    argh_parser p;
+    setup(&p);
+    argh_set_validator(&p, check_range, &r);
+
+    ASSERT_FALSE(argh_parse(&p, argc, argv));
+    ASSERT_EQ(argh_exit_code(&p), 0);
+    ASSERT_EQ(r.calls, 0);
+}
+
+#ifndef ARGH_NO_COMMANDS
+/* ============================================================================
+ * Commands
+ * ============================================================================ */
+
+static bool c_verbose;
+static bool c_release;
+static bool c_force;
+static const char *c_name;
+static const char *c_url;
+static argh_values c_args;
+static int c_handler_calls;
+
+static int c_run_build(argh_parser *p, void *user)
+{
+    (void)p;
+    c_handler_calls++;
+    return *(int *)user;
+}
+
+static const argh_opt c_build_opts[] = {
+    ARGH_FLAG('r', "release", &c_release, "Optimized build"),
+    ARGH_END,
+};
+
+static const argh_opt c_add_opts[] = {
+    ARGH_FLAG('f', "force", &c_force, "Overwrite an existing remote"),
+    ARGH_POS("name", &c_name, "Remote name"),
+    ARGH_POS("url", &c_url, "Remote URL"),
+    ARGH_END,
+};
+
+static const argh_opt c_exec_opts[] = {
+    ARGH_REST("args", &c_args, "Arguments to pass on"),
+    ARGH_END,
+};
+
+static const argh_cmd c_remote_cmds[] = {
+    ARGH_CMD("add", "Add a remote", c_add_opts),
+    ARGH_CMD("remove", "Remove a remote", NULL),
+    ARGH_CMD_END,
+};
+
+static const argh_cmd c_cmds[] = {
+    ARGH_CMD("build", "Build the project", c_build_opts, c_run_build),
+    ARGH_CMD("exec", "Run a program", c_exec_opts),
+    ARGH_CMD_GROUP("remote", "Manage remotes", c_remote_cmds),
+    ARGH_CMD_END,
+};
+
+static void setup_commands(argh_parser *p)
+{
+    c_verbose = c_release = c_force = false;
+    c_name = c_url = NULL;
+    memset(&c_args, 0, sizeof(c_args));
+    c_handler_calls = 0;
+    argh_init(p, "tool", "Example tool");
+    argh_set_writer(p, capture, NULL);
+    argh_flag(p, 'v', "verbose", &c_verbose, "Verbose output");
+    argh_commands(p, c_cmds);
+}
+
+TEST(test_command_dispatch)
+{
+    ARGV("build", "--release");
+    int result = 7;
+    argh_parser p;
+    setup_commands(&p);
+
+    ASSERT_TRUE(argh_parse(&p, argc, argv));
+    ASSERT_TRUE(argh_command(&p) == &c_cmds[0]);
+    ASSERT_TRUE(c_release);
+    ASSERT_EQ(argh_run(&p, &result), 7);
+    ASSERT_EQ(c_handler_calls, 1);
+}
+
+TEST(test_command_global_option_before_and_after)
+{
+    char *before[] = {(char *)"tool", (char *)"-v", (char *)"build", NULL};
+    char *after[] = {(char *)"tool", (char *)"build", (char *)"-v", NULL};
+    argh_parser p;
+
+    setup_commands(&p);
+    ASSERT_TRUE(argh_parse(&p, 3, before));
+    ASSERT_TRUE(c_verbose);
+
+    setup_commands(&p);
+    ASSERT_TRUE(argh_parse(&p, 3, after));
+    ASSERT_TRUE(c_verbose);
+    ASSERT_TRUE(argh_given(&p, &c_verbose));
+}
+
+TEST(test_command_option_before_command_is_unknown)
+{
+    ARGV("--release", "build");
+    argh_parser p;
+    setup_commands(&p);
+
+    ASSERT_FALSE(argh_parse(&p, argc, argv));
+    ASSERT_STR_EQ(error_text(&p), "unknown option '--release'");
+}
+
+TEST(test_command_options_of_other_commands_are_unknown)
+{
+    ARGV("build", "--force");
+    argh_parser p;
+    setup_commands(&p);
+
+    ASSERT_FALSE(argh_parse(&p, argc, argv));
+    ASSERT_EQ(argh_last_error(&p)->code, ARGH_E_UNKNOWN_OPTION);
+    ASSERT_FALSE(argh_given(&p, &c_force));
+}
+
+TEST(test_command_nested)
+{
+    ARGV("remote", "add", "-f", "origin", "https://example.com/repo.git");
+    argh_parser p;
+    setup_commands(&p);
+
+    ASSERT_TRUE(argh_parse(&p, argc, argv));
+    ASSERT_TRUE(argh_command(&p) == &c_remote_cmds[0]);
+    ASSERT_TRUE(c_force);
+    ASSERT_STR_EQ(c_name, "origin");
+    ASSERT_STR_EQ(c_url, "https://example.com/repo.git");
+    ASSERT_EQ(argh_run(&p, NULL), 0); /* no handler */
+}
+
+TEST(test_command_without_options)
+{
+    ARGV("remote", "remove");
+    argh_parser p;
+    setup_commands(&p);
+
+    ASSERT_TRUE(argh_parse(&p, argc, argv));
+    ASSERT_TRUE(argh_command(&p) == &c_remote_cmds[1]);
+}
+
+TEST(test_command_rest_and_double_dash)
+{
+    ARGV("exec", "-v", "--", "ls", "-la");
+    argh_parser p;
+    setup_commands(&p);
+
+    ASSERT_TRUE(argh_parse(&p, argc, argv));
+    ASSERT_TRUE(c_verbose);
+    ASSERT_EQ(c_args.count, 2);
+    ASSERT_STR_EQ(c_args.items[0], "ls");
+    ASSERT_STR_EQ(c_args.items[1], "-la");
+}
+
+TEST(test_command_unknown)
+{
+    ARGV("biuld");
+    argh_parser p;
+    setup_commands(&p);
+
+    ASSERT_FALSE(argh_parse(&p, argc, argv));
+    ASSERT_EQ(argh_exit_code(&p), 2);
+    ASSERT_STR_EQ(error_text(&p), "unknown command 'biuld'" DID_YOU_MEAN("build"));
+    ASSERT_STR_EQ(err_text, "tool: unknown command 'biuld'" DID_YOU_MEAN("build") "\n"
+                            "Try 'tool --help' for more information.\n");
+}
+
+TEST(test_command_missing)
+{
+    ARGV("-v");
+    argh_parser p;
+    setup_commands(&p);
+
+    ASSERT_FALSE(argh_parse(&p, argc, argv));
+    ASSERT_EQ(argh_exit_code(&p), 2);
+    ASSERT_EQ(out_len, 0u); /* nothing on stdout: the run failed */
+    ASSERT_STR_EQ(err_text,
+                  "tool: missing command\n"
+                  "\n"
+                  "Commands:\n"
+                  "  build   Build the project\n"
+                  "  exec    Run a program\n"
+                  "  remote  Manage remotes\n"
+                  "\n"
+                  "Try 'tool --help' for more information.\n");
+}
+
+TEST(test_command_missing_nested)
+{
+    ARGV("remote");
+    argh_parser p;
+    setup_commands(&p);
+
+    ASSERT_FALSE(argh_parse(&p, argc, argv));
+    ASSERT_STR_EQ(err_text,
+                  "tool: 'remote' needs a command\n"
+                  "\n"
+                  "Commands:\n"
+                  "  add     Add a remote\n"
+                  "  remove  Remove a remote\n"
+                  "\n"
+                  "Try 'tool remote --help' for more information.\n");
+}
+
+TEST(test_command_help_root)
+{
+    ARGV("--help");
+    argh_parser p;
+    setup_commands(&p);
+
+    ASSERT_FALSE(argh_parse(&p, argc, argv));
+    ASSERT_EQ(argh_exit_code(&p), 0);
+    ASSERT_STR_EQ(out_text,
+                  "Usage: tool [OPTIONS] <command>\n"
+                  "\n"
+                  "Example tool\n"
+                  "\n"
+                  "Commands:\n"
+                  "  build          Build the project\n"
+                  "  exec           Run a program\n"
+                  "  remote         Manage remotes\n"
+                  "\n"
+                  "Options:\n"
+                  "  -v, --verbose  Verbose output\n"
+                  "\n"
+                  "  -h, --help     Print help\n");
+}
+
+static const char *const expected_add_help =
+    "Usage: tool remote add [OPTIONS] <name> <url>\n"
+    "\n"
+    "Add a remote\n"
+    "\n"
+    "Arguments:\n"
+    "  <name>         Remote name\n"
+    "  <url>          Remote URL\n"
+    "\n"
+    "Options:\n"
+    "  -f, --force    Overwrite an existing remote\n"
+    "\n"
+    "Global options:\n"
+    "  -v, --verbose  Verbose output\n"
+    "\n"
+    "  -h, --help     Print help\n";
+
+TEST(test_command_help_leaf)
+{
+    ARGV("remote", "add", "--help");
+    argh_parser p;
+    setup_commands(&p);
+
+    ASSERT_FALSE(argh_parse(&p, argc, argv));
+    ASSERT_EQ(argh_exit_code(&p), 0);
+    if (strcmp(out_text, expected_add_help) != 0)
+        printf("--- got ---\n%s--- expected ---\n%s", out_text, expected_add_help);
+    ASSERT_STR_EQ(out_text, expected_add_help);
+}
+
+TEST(test_command_help_subcommand)
+{
+    ARGV("help", "remote", "add");
+    argh_parser p;
+    setup_commands(&p);
+
+    ASSERT_FALSE(argh_parse(&p, argc, argv));
+    ASSERT_EQ(argh_exit_code(&p), 0);
+    ASSERT_STR_EQ(out_text, expected_add_help);
+}
+
+TEST(test_command_help_group)
+{
+    ARGV("remote", "-h");
+    argh_parser p;
+    setup_commands(&p);
+
+    ASSERT_FALSE(argh_parse(&p, argc, argv));
+    ASSERT_TRUE(strncmp(out_text, "Usage: tool remote [OPTIONS] <command>\n", 39) == 0);
+    ASSERT_TRUE(strstr(out_text, "Commands:\n  add ") != NULL);
+    ASSERT_TRUE(strstr(out_text, "Global options:\n  -v, --verbose") != NULL);
+}
+
+TEST(test_command_help_unknown)
+{
+    ARGV("help", "nope");
+    argh_parser p;
+    setup_commands(&p);
+
+    ASSERT_FALSE(argh_parse(&p, argc, argv));
+    ASSERT_EQ(argh_exit_code(&p), 2);
+    ASSERT_STR_EQ(error_text(&p), "unknown command 'nope'");
+}
+
+TEST(test_command_config_root_positional)
+{
+    ARGV("build");
+    const char *file = NULL;
+    argh_parser p;
+    setup_commands(&p);
+    argh_pos(&p, "file", &file, "");
+
+    ASSERT_FALSE(argh_parse(&p, argc, argv));
+    ASSERT_EQ(argh_last_error(&p)->code, ARGH_E_CONFIG);
+}
+
+/* Definition checks run only without NDEBUG */
+#ifndef NDEBUG
+TEST(test_command_config_reserved_help)
+{
+    static const argh_cmd cmds[] = {ARGH_CMD("help", "Mine", NULL), ARGH_CMD_END};
+    ARGV("help");
+    argh_parser p;
+    setup(&p);
+    argh_commands(&p, cmds);
+
+    ASSERT_FALSE(argh_parse(&p, argc, argv));
+    ASSERT_STR_EQ(error_text(&p), "configuration error: command name 'help' is reserved, see ARGH_NO_AUTO_HELP");
+}
+#endif
+
+/* Definition checks run only without NDEBUG */
+#ifndef NDEBUG
+TEST(test_command_config_duplicate_with_global)
+{
+    static bool clash;
+    static const argh_opt opts[] = {ARGH_FLAG('v', "verbose", &clash, ""), ARGH_END};
+    static const argh_cmd cmds[] = {ARGH_CMD("run", "", opts), ARGH_CMD_END};
+    ARGV("run");
+    bool verbose = false;
+    argh_parser p;
+    setup(&p);
+    argh_flag(&p, 'v', "verbose", &verbose, "");
+    argh_commands(&p, cmds);
+
+    ASSERT_FALSE(argh_parse(&p, argc, argv));
+    ASSERT_STR_EQ(error_text(&p), "configuration error: option defined twice (--verbose)");
+}
+#endif
+
+TEST(test_command_posix_mode_at_leaf)
+{
+    ARGV("exec", "ls", "-v");
+    argh_parser p;
+    setup_commands(&p);
+    argh_set_flags(&p, ARGH_POSIX);
+
+    ASSERT_TRUE(argh_parse(&p, argc, argv));
+    ASSERT_FALSE(c_verbose);
+    ASSERT_EQ(c_args.count, 2);
+    ASSERT_STR_EQ(c_args.items[1], "-v");
+}
+
+#endif /* ARGH_NO_COMMANDS */
+
+#ifndef ARGH_NO_SUGGEST
+/* ============================================================================
+ * Suggestions
+ * ============================================================================ */
+
+/* Parses one argument against a fixed set of options, returns the suggestion */
+static const char *suggestion_for(const char *arg)
+{
+    static bool verbose, dry_run, color, secret;
+    static int jobs;
+    char *argv[] = {(char *)"prog", (char *)arg, NULL};
+    argh_parser p;
+    setup(&p);
+    argh_version(&p, "1.0");
+    argh_flag(&p, 'v', "verbose", &verbose, "");
+    argh_flag(&p, 'n', "dry-run", &dry_run, "");
+    argh_flag(&p, 0, "color", &color, "");
+    argh_hidden(argh_flag(&p, 0, "secret-mode", &secret, ""));
+    argh_int(&p, 'j', "jobs", &jobs, "");
+    argh_parse(&p, 2, argv);
+    return argh_last_error(&p)->suggestion;
+}
+
+TEST(test_suggest_options)
+{
+    ASSERT_STR_EQ(suggestion_for("--verbos"), "verbose");    /* deletion */
+    ASSERT_STR_EQ(suggestion_for("--verbosee"), "verbose");  /* insertion */
+    ASSERT_STR_EQ(suggestion_for("--verbsoe"), "verbose");   /* swap */
+    ASSERT_STR_EQ(suggestion_for("--dryrun"), "dry-run");
+    ASSERT_STR_EQ(suggestion_for("--colour"), "color");
+}
+
+TEST(test_suggest_value_form)
+{
+    ASSERT_STR_EQ(suggestion_for("--job=4"), "jobs");
+}
+
+TEST(test_suggest_builtins)
+{
+    ASSERT_STR_EQ(suggestion_for("--hlep"), "help");
+    ASSERT_STR_EQ(suggestion_for("--versoin"), "version");
+}
+
+TEST(test_suggest_nothing_far_away)
+{
+    ASSERT_TRUE(suggestion_for("--output") == NULL);
+    ASSERT_TRUE(suggestion_for("--jb") == NULL);      /* 2 edits on a 2-letter word */
+    ASSERT_TRUE(suggestion_for("-x") == NULL);        /* short options: no suggestion */
+    ASSERT_TRUE(suggestion_for("--secret-mod") == NULL); /* hidden options stay hidden */
+}
+
+#ifndef ARGH_NO_COMMANDS
+TEST(test_suggest_commands)
+{
+    char *nested[] = {(char *)"tool", (char *)"remote", (char *)"ad", NULL};
+    char *help[] = {(char *)"tool", (char *)"hepl", NULL};
+    argh_parser p;
+
+    setup_commands(&p);
+    ASSERT_FALSE(argh_parse(&p, 3, nested));
+    ASSERT_STR_EQ(error_text(&p), "unknown command 'ad' (did you mean 'add'?)");
+
+    setup_commands(&p);
+    ASSERT_FALSE(argh_parse(&p, 2, help));
+    ASSERT_STR_EQ(argh_last_error(&p)->suggestion, "help");
+}
+
+TEST(test_suggest_on_command_path)
+{
+    char *argv[] = {(char *)"tool", (char *)"remote", (char *)"add", (char *)"--forse", NULL};
+    char *global[] = {(char *)"tool", (char *)"build", (char *)"--verbos", NULL};
+    char *other[] = {(char *)"tool", (char *)"build", (char *)"--forc", NULL};
+    argh_parser p;
+
+    setup_commands(&p);
+    ASSERT_FALSE(argh_parse(&p, 4, argv));
+    ASSERT_STR_EQ(argh_last_error(&p)->suggestion, "force");
+
+    setup_commands(&p);
+    ASSERT_FALSE(argh_parse(&p, 3, global));
+    ASSERT_STR_EQ(argh_last_error(&p)->suggestion, "verbose");
+
+    /* --force belongs to another command, so it is not suggested */
+    setup_commands(&p);
+    ASSERT_FALSE(argh_parse(&p, 3, other));
+    ASSERT_TRUE(argh_last_error(&p)->suggestion == NULL);
+}
+#endif /* ARGH_NO_COMMANDS */
+#endif /* ARGH_NO_SUGGEST */
+
 TEST(test_parser_size)
 {
     /* Budget from the design: the core stays small, the builder is extra */
@@ -1154,7 +2043,9 @@ int main(void)
 
     RUN_TEST(test_config_reserved_help);
     RUN_TEST(test_config_no_auto_help_frees_h);
+#ifndef NDEBUG
     RUN_TEST(test_config_duplicate);
+#endif
     RUN_TEST(test_config_builder_overflow);
     RUN_TEST(test_config_missing_target);
 
@@ -1174,6 +2065,112 @@ int main(void)
     RUN_TEST(test_given);
     RUN_TEST(test_empty_argv);
     RUN_TEST(test_parse_twice_resets_state);
+    RUN_TEST(test_custom_builder);
+    RUN_TEST(test_custom_table);
+    RUN_TEST(test_custom_error_uses_reason);
+    RUN_TEST(test_custom_struct_error);
+    RUN_TEST(test_custom_help);
+    RUN_TEST(test_custom_required);
+    RUN_TEST(test_custom_config_without_type);
+    RUN_TEST(test_rules_satisfied);
+    RUN_TEST(test_rule_at_most_one);
+    RUN_TEST(test_rule_exactly_one_missing);
+    RUN_TEST(test_rule_exactly_one_both);
+    RUN_TEST(test_rule_requires);
+    RUN_TEST(test_rule_requires_only_when_given);
+    RUN_TEST(test_rule_at_least_one);
+    RUN_TEST(test_rule_three_names);
+    RUN_TEST(test_rule_config_one_variable);
+#ifndef NDEBUG
+    RUN_TEST(test_rule_config_unbound_variable);
+#endif
+#if !defined(ARGH_NO_COMMANDS)
+    RUN_TEST(test_rule_skipped_for_other_command);
+#endif
+    RUN_TEST(test_validator);
+    RUN_TEST(test_validator_passes);
+    RUN_TEST(test_validator_without_message);
+    RUN_TEST(test_validator_not_called_after_errors);
+    RUN_TEST(test_validator_not_called_for_help);
+#if !defined(ARGH_NO_COMMANDS)
+    RUN_TEST(test_command_dispatch);
+#endif
+#if !defined(ARGH_NO_COMMANDS)
+    RUN_TEST(test_command_global_option_before_and_after);
+#endif
+#if !defined(ARGH_NO_COMMANDS)
+    RUN_TEST(test_command_option_before_command_is_unknown);
+#endif
+#if !defined(ARGH_NO_COMMANDS)
+    RUN_TEST(test_command_options_of_other_commands_are_unknown);
+#endif
+#if !defined(ARGH_NO_COMMANDS)
+    RUN_TEST(test_command_nested);
+#endif
+#if !defined(ARGH_NO_COMMANDS)
+    RUN_TEST(test_command_without_options);
+#endif
+#if !defined(ARGH_NO_COMMANDS)
+    RUN_TEST(test_command_rest_and_double_dash);
+#endif
+#if !defined(ARGH_NO_COMMANDS)
+    RUN_TEST(test_command_unknown);
+#endif
+#if !defined(ARGH_NO_COMMANDS)
+    RUN_TEST(test_command_missing);
+#endif
+#if !defined(ARGH_NO_COMMANDS)
+    RUN_TEST(test_command_missing_nested);
+#endif
+#if !defined(ARGH_NO_COMMANDS)
+    RUN_TEST(test_command_help_root);
+#endif
+#if !defined(ARGH_NO_COMMANDS)
+    RUN_TEST(test_command_help_leaf);
+#endif
+#if !defined(ARGH_NO_COMMANDS)
+    RUN_TEST(test_command_help_subcommand);
+#endif
+#if !defined(ARGH_NO_COMMANDS)
+    RUN_TEST(test_command_help_group);
+#endif
+#if !defined(ARGH_NO_COMMANDS)
+    RUN_TEST(test_command_help_unknown);
+#endif
+#if !defined(ARGH_NO_COMMANDS)
+    RUN_TEST(test_command_config_root_positional);
+#endif
+#if !defined(ARGH_NO_COMMANDS)
+#ifndef NDEBUG
+    RUN_TEST(test_command_config_reserved_help);
+#endif
+#endif
+#if !defined(ARGH_NO_COMMANDS)
+#ifndef NDEBUG
+    RUN_TEST(test_command_config_duplicate_with_global);
+#endif
+#endif
+#if !defined(ARGH_NO_COMMANDS)
+    RUN_TEST(test_command_posix_mode_at_leaf);
+#endif
+#if !defined(ARGH_NO_SUGGEST)
+    RUN_TEST(test_suggest_options);
+#endif
+#if !defined(ARGH_NO_SUGGEST)
+    RUN_TEST(test_suggest_value_form);
+#endif
+#if !defined(ARGH_NO_SUGGEST)
+    RUN_TEST(test_suggest_builtins);
+#endif
+#if !defined(ARGH_NO_SUGGEST)
+    RUN_TEST(test_suggest_nothing_far_away);
+#endif
+#if !defined(ARGH_NO_SUGGEST) && !defined(ARGH_NO_COMMANDS)
+    RUN_TEST(test_suggest_commands);
+#endif
+#if !defined(ARGH_NO_SUGGEST) && !defined(ARGH_NO_COMMANDS)
+    RUN_TEST(test_suggest_on_command_path);
+#endif
     RUN_TEST(test_parser_size);
 
     printf("\nRun: %d\nPassed: %d\nFailed: %d\n", tests_run, tests_passed, tests_failed);

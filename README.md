@@ -10,7 +10,7 @@ int jobs = 4;
 argh_int(&p, 'j', "jobs", &jobs, "Parallel jobs");
 ```
 
-> **Status: early development (v0.2).** Tested on every push, but the API may still change before v1.0.
+> **Status: early development (v0.3).** Tested on every push, but the API may still change before v1.0.
 > Feedback on the API is very welcome.
 
 ## Why argh
@@ -20,7 +20,7 @@ argh_int(&p, 'j', "jobs", &jobs, "Parallel jobs");
 - **Zero heap allocations, no global state.** Strings point into `argv`. Option tables can be `static const`, so they live in read-only memory (flash on microcontrollers).
 - **Help and errors included.** `--help`, `--version`, clear error messages and the right exit codes, without writing any of it.
 - **Strict by design.** Ambiguous input is an error, never a guess. No octal surprises, no prefix matching, no `-o=file`.
-- **As fast as `getopt_long`.** See [Benchmarks](#benchmarks).
+- **Close to `getopt_long` in speed**, while validating every value. See [Benchmarks](#benchmarks).
 
 ## Quick start
 
@@ -100,6 +100,7 @@ $ echo $?
 | `argh_list`   | `ARGH_LIST`   | `argh_values`  | `-I a -I b`                              |
 | `argh_pos`    | `ARGH_POS`    | `const char *` | one positional argument                  |
 | `argh_rest`   | `ARGH_REST`   | `argh_values`  | all remaining positional arguments       |
+| `argh_custom` | `ARGH_CUSTOM` | anything       | your parser, see below                   |
 
 Pass `0` as the short name for a long-only option, and `NULL` as the long name for a short-only one.
 
@@ -122,6 +123,51 @@ for (int i = 0; i < files.count; i++)
     puts(files.items[i]);
 ```
 
+### Your own value types
+
+Sizes like `10M`, durations like `30s`, `host:port` pairs: describe the type once with a parse function, then use it for any number of options.
+
+```c
+/* Returns NULL on success, or a short reason that ends up in the error message */
+static const char *parse_size(const char *text, void *target)
+{
+    char *end;
+    unsigned long long value = strtoull(text, &end, 10);
+    if (end == text)
+        return "expected a size like 512K or 10M";
+    if (*end == 'K') { value <<= 10; end++; }
+    else if (*end == 'M') { value <<= 20; end++; }
+    if (*end)
+        return "expected a size like 512K or 10M";
+    *(unsigned long long *)target = value;
+    return NULL;
+}
+
+/* Optional: lets help show the default */
+static bool format_size(const void *target, char *buf, size_t size)
+{
+    snprintf(buf, size, "%lluM", *(const unsigned long long *)target >> 20);
+    return true;
+}
+
+static const argh_type size_type = {"<size>", parse_size, format_size};
+
+unsigned long long max_size = 64ull << 20;
+argh_custom(&p, 's', "max-size", &max_size, &size_type, "Largest file to keep");
+/* or in a table: ARGH_CUSTOM('s', "max-size", &max_size, &size_type, "Largest file to keep") */
+```
+
+```console
+$ ./tool --help
+  -s, --max-size <size>  Largest file to keep (default: 64M)
+
+$ ./tool --max-size 10Q
+tool: invalid value '10Q' for '--max-size': expected a size like 512K or 10M
+Try 'tool --help' for more information.
+```
+
+The target can be anything, including a struct. `argh_type` is a constant, so it lives in read-only memory and can be shared between programs. The format function is optional: without it, help shows no default.
+
 ### Required, hidden, negatable
 
 Builder calls return the option, and modifiers can be chained:
@@ -139,6 +185,57 @@ Did the user actually pass an option, or is it the default? Ask by variable:
 ```c
 if (argh_given(&p, &jobs))
     printf("jobs set explicitly\n");
+```
+
+### Rules between options
+
+Some options only make sense together, or not at all together. Say so in a table that refers to your variables, and argh checks it and explains the problem:
+
+```c
+static const argh_rule rules[] = {
+    ARGH_AT_MOST_ONE(&json, &yaml, &csv),    /* one output format */
+    ARGH_EXACTLY_ONE(&input, &use_stdin),    /* one input source */
+    ARGH_REQUIRES(&tls_key, &tls_cert),      /* a key needs its certificate */
+    ARGH_RULES_END
+};
+
+argh_rules(&p, rules);
+```
+
+```console
+$ ./export --json --csv --stdin
+export: options '--json' and '--csv' cannot be used together
+$ ./export --yaml
+export: one of '--input' or '--stdin' is required
+$ ./export --stdin --tls-key k.pem
+export: option '--tls-key' requires '--tls-cert'
+```
+
+| Rule                              | Meaning                                  |
+| --------------------------------- | ---------------------------------------- |
+| `ARGH_AT_MOST_ONE(&a, &b, ...)`   | no two of them together                  |
+| `ARGH_EXACTLY_ONE(&a, &b, ...)`   | one of them, and only one                |
+| `ARGH_AT_LEAST_ONE(&a, &b, ...)`  | one of them or more                      |
+| `ARGH_REQUIRES(&a, &b, ...)`      | if `a` is given, all the others must be  |
+
+A rule takes 2 to 4 variables. Because rules refer to variables rather than names, a typo is a compile error. With commands, a rule only applies when all its options are active, so rules for different commands can share one table.
+
+For anything else, add a validator. It runs after every other check has passed:
+
+```c
+static bool check_sizes(argh_parser *p, void *ctx)
+{
+    if (min_size > max_size)
+        return argh_fail(p, "--min-size must not be greater than --max-size");
+    return true;
+}
+
+argh_set_validator(&p, check_sizes, NULL);
+```
+
+```console
+$ ./export --stdin --min-size 50 --max-size 10
+export: --min-size must not be greater than --max-size
 ```
 
 ### Option tables
@@ -167,6 +264,101 @@ argh_table(&p, options);
 - `argh_table` can be called several times, so each module of a program can define its own options. Tables and builder calls can be mixed.
 - `ARGH_GROUP` starts a new section in the help output.
 
+### Commands
+
+Tools like `git` or `docker` group their work into commands: `tool build`, `tool remote add`. Describe them as a table, each with its own options:
+
+```c
+static bool verbose, release, force;
+static const char *name, *url;
+
+static int build(argh_parser *p, void *app)
+{
+    printf("building%s\n", release ? " (release)" : "");
+    return 0;
+}
+
+static const argh_opt build_opts[] = {
+    ARGH_FLAG('r', "release", &release, "Optimized build"),
+    ARGH_END
+};
+
+static const argh_opt add_opts[] = {
+    ARGH_FLAG('f', "force", &force, "Overwrite an existing remote"),
+    ARGH_POS("name", &name, "Remote name"),
+    ARGH_POS("url", &url, "Remote URL"),
+    ARGH_END
+};
+
+static const argh_cmd remote_cmds[] = {
+    ARGH_CMD("add", "Add a remote", add_opts),
+    ARGH_CMD("list", "List remotes", NULL),
+    ARGH_CMD_END
+};
+
+static const argh_cmd commands[] = {
+    ARGH_CMD("build", "Build the project", build_opts, build),
+    ARGH_CMD_GROUP("remote", "Manage remotes", remote_cmds),
+    ARGH_CMD_END
+};
+
+int main(int argc, char **argv)
+{
+    argh_parser p;
+    argh_init(&p, "tool", "Builds things");
+    argh_flag(&p, 'v', "verbose", &verbose, "Verbose output");   /* a global option */
+    argh_commands(&p, commands);
+
+    if (!argh_parse(&p, argc, argv))
+        return argh_exit_code(&p);
+
+    if (argh_command(&p) == &remote_cmds[0])
+        printf("adding %s -> %s\n", name, url);
+    return argh_run(&p, NULL);   /* calls the handler of the selected command, if any */
+}
+```
+
+- `ARGH_CMD(name, help, options[, handler])`: the handler is optional. Pass `NULL` for a command without options.
+- `ARGH_CMD_GROUP(name, help, subcommands)`: a command that only holds other commands, like `remote`.
+- Options added to the parser itself are **global**: they work before and after the command name (`tool -v build` and `tool build -v`). A command's own options only work after its name.
+- Dispatch either way: `argh_run(&p, app)` calls the handler and passes `app` through, or `argh_command(&p)` returns the selected command for your own `switch`.
+
+Every level gets its own help, and `tool help remote add` works like `tool remote add --help`:
+
+```console
+$ ./tool remote add --help
+Usage: tool remote add [OPTIONS] <name> <url>
+
+Add a remote
+
+Arguments:
+  <name>         Remote name
+  <url>          Remote URL
+
+Options:
+  -f, --force    Overwrite an existing remote
+
+Global options:
+  -v, --verbose  Verbose output
+
+  -h, --help     Print help
+```
+
+When a command is missing, the error lists what's available:
+
+```console
+$ ./tool remote
+tool: 'remote' needs a command
+
+Commands:
+  add   Add a remote
+  list  List remotes
+
+Try 'tool remote --help' for more information.
+```
+
+Command names match exactly, like options. A program with commands can't have positional arguments of its own, and neither can a command group: positionals belong to the commands that do the work.
+
 ### Help and version
 
 `-h`/`--help` always works. `-V`/`--version` works once you set a version:
@@ -182,6 +374,20 @@ Need `-h` for something else, like `--host`? Turn the built-ins off with `argh_s
 ### Errors
 
 On an error, `argh_parse` prints a one-line message plus a hint to stderr and returns `false`. `argh_exit_code` then returns 2, the Unix convention for usage errors.
+
+Typos in long options and command names get a suggestion:
+
+```console
+$ ./tool --verbsoe build
+tool: unknown option '--verbsoe' (did you mean '--verbose'?)
+Try 'tool --help' for more information.
+
+$ ./tool remote ad origin https://example.com/app.git
+tool: unknown command 'ad' (did you mean 'add'?)
+Try 'tool remote --help' for more information.
+```
+
+Suggestions only name options and commands that are valid at that point, never hidden options, and only when the match is close (up to 2 edits, counting a swap of two letters as one). They are computed only after an error, so they cost nothing on a successful parse. `ARGH_NO_SUGGEST` removes them.
 
 To handle errors yourself:
 
@@ -231,10 +437,13 @@ Define before including `argh.h`:
 | Macro              | Default | Meaning                                                        |
 | ------------------ | ------: | -------------------------------------------------------------- |
 | `ARGH_BUILDER_CAP` |      32 | Options that builder calls can add. `0` if you only use tables |
-| `ARGH_MAX_OPTS`    |      64 | Options per parser, all tables combined                        |
+| `ARGH_MAX_OPTS`    |      64 | Options on the active command path, all tables combined        |
 | `ARGH_MAX_TABLES`  |       8 | Tables per parser. The builder counts as one                   |
+| `ARGH_MAX_DEPTH`   |       4 | Levels of nested commands                                      |
+| `ARGH_NO_SUGGEST`  |         | Define to remove "did you mean" suggestions (about 0.8 KB)     |
+| `ARGH_NO_COMMANDS` |         | Define to remove commands (about 2.6 KB) if you don't use them |
 
-Mistakes in the definitions, such as two options with the same name or a missing variable, are reported by `argh_parse` as `ARGH_E_CONFIG`. The duplicate-name check runs in builds without `NDEBUG`.
+Mistakes in the definitions, such as two options with the same name or a missing variable, are reported by `argh_parse` as `ARGH_E_CONFIG`. The checks for duplicate names and for the command tree run in builds without `NDEBUG`.
 
 ## API reference
 
@@ -245,6 +454,10 @@ void argh_version(argh_parser *p, const char *version);
 void argh_set_flags(argh_parser *p, unsigned flags);                   /* ARGH_POSIX, ARGH_NO_AUTO_HELP */
 void argh_set_writer(argh_parser *p, argh_write_fn write, void *ctx);
 void argh_table(argh_parser *p, const argh_opt *table);
+void argh_commands(argh_parser *p, const argh_cmd *commands);
+void argh_rules(argh_parser *p, const argh_rule *rules);
+void argh_set_validator(argh_parser *p, argh_validate_fn fn, void *ctx);
+bool argh_fail(argh_parser *p, const char *message);                   /* inside a validator */
 
 /* Builder: each returns the option, or NULL when ARGH_BUILDER_CAP is exceeded */
 argh_opt *argh_flag  (argh_parser *p, char s, const char *l, bool *target, const char *help);
@@ -257,6 +470,7 @@ argh_opt *argh_enum  (argh_parser *p, char s, const char *l, int *target, const 
 argh_opt *argh_list  (argh_parser *p, char s, const char *l, argh_values *target, const char *help);
 argh_opt *argh_pos   (argh_parser *p, const char *name, const char **target, const char *help);
 argh_opt *argh_rest  (argh_parser *p, const char *name, argh_values *target, const char *help);
+argh_opt *argh_custom(argh_parser *p, char s, const char *l, void *target, const argh_type *type, const char *help);
 argh_opt *argh_group (argh_parser *p, const char *title);
 
 /* Modifiers: accept NULL, return their argument */
@@ -271,6 +485,8 @@ argh_opt *argh_metavar(argh_opt *o, const char *metavar);   /* "<file>" instead 
 bool argh_parse(argh_parser *p, int argc, char **argv);
 int argh_exit_code(const argh_parser *p);                    /* 0, or 2 after an error */
 bool argh_given(const argh_parser *p, const void *target);
+const argh_cmd *argh_command(const argh_parser *p);         /* selected command, or NULL */
+int argh_run(argh_parser *p, void *user);                     /* calls its handler */
 const argh_error *argh_last_error(const argh_parser *p);
 size_t argh_format_error(const argh_parser *p, char *buf, size_t size);
 void argh_print_help(const argh_parser *p);
@@ -314,9 +530,7 @@ if (!argh_parse(&p, argc, argv)) return argh_exit_code(&p);
 
 Planned for upcoming versions:
 
-- **Subcommands** (`git remote add ...`) arrive in v0.3.
-- **Custom value types** through a callback arrive in v0.3.
-- **A reduced build for microcontrollers** (no stdio, no help text) arrives in v0.4. Today argh adds about 12 KB of code and text on Linux.
+- **A reduced build for microcontrollers** (no stdio, no help text) arrives in v0.4. Today argh adds 14 to 18 KB of code and text on Linux, depending on the features you keep (see [Configuration](#configuration)).
 - Floating-point values follow the C locale's decimal separator, like `strtod`.
 
 ## Benchmarks
@@ -325,10 +539,10 @@ Time to set up a parser with 30 options and parse 17 arguments, release builds (
 
 | Platform           | argh (table) | argh (builder) | getopt_long |
 | ------------------ | -----------: | -------------: | ----------: |
-| macOS, Clang       |       447 ns |         499 ns |      476 ns |
-| Linux, GCC         |       549 ns |         618 ns |      511 ns |
-| Linux, Clang       |       628 ns |         671 ns |      625 ns |
-| Windows, MinGW GCC |       934 ns |         979 ns |      853 ns |
+| macOS, Clang       |       422 ns |         450 ns |      399 ns |
+| Linux, Clang       |       707 ns |         780 ns |      629 ns |
+| Linux, GCC         |       723 ns |         807 ns |      618 ns |
+| Windows, MinGW GCC |     1,098 ns |       1,147 ns |      890 ns |
 
 argh makes zero heap allocations. Details, memory, code size and the method: [BENCHMARKS.md](BENCHMARKS.md). Run them with `make bench`.
 
