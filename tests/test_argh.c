@@ -1097,6 +1097,178 @@ TEST(test_parse_twice_resets_state)
     ASSERT_TRUE(argh_given(&p, &verbose));
 }
 
+/* ============================================================================
+ * Custom types
+ * ============================================================================ */
+
+/* A size with an optional K/M/G suffix: 512, 64K, 10M, 1G */
+static const char *parse_size(const char *text, void *target)
+{
+    unsigned long long value = 0;
+    const char *s = text;
+    if (*s < '0' || *s > '9')
+        return "expected a size like 512K, 10M or 1G";
+    for (; *s >= '0' && *s <= '9'; s++)
+        value = value * 10 + (unsigned long long)(*s - '0');
+    switch (*s)
+    {
+    case 'K': value <<= 10; s++; break;
+    case 'M': value <<= 20; s++; break;
+    case 'G': value <<= 30; s++; break;
+    default: break;
+    }
+    if (*s)
+        return "expected a size like 512K, 10M or 1G";
+    *(unsigned long long *)target = value;
+    return NULL;
+}
+
+static bool format_size(const void *target, char *buf, size_t size)
+{
+    unsigned long long v = *(const unsigned long long *)target;
+    if (v && v % (1ull << 20) == 0)
+        snprintf(buf, size, "%lluM", v >> 20);
+    else if (v && v % (1ull << 10) == 0)
+        snprintf(buf, size, "%lluK", v >> 10);
+    else
+        snprintf(buf, size, "%llu", v);
+    return true;
+}
+
+static const argh_type size_type = {"<size>", parse_size, format_size};
+
+/* host:port, into a struct */
+typedef struct
+{
+    char host[64];
+    int port;
+} endpoint;
+
+static const char *parse_endpoint(const char *text, void *target)
+{
+    endpoint *ep = (endpoint *)target;
+    const char *colon = strrchr(text, ':');
+    size_t host_len;
+    long port;
+    char *end;
+    if (!colon || colon == text)
+        return "expected host:port";
+    host_len = (size_t)(colon - text);
+    if (host_len >= sizeof(ep->host))
+        return "host name too long";
+    port = strtol(colon + 1, &end, 10);
+    if (*end || end == colon + 1 || port < 1 || port > 65535)
+        return "port must be 1-65535";
+    memcpy(ep->host, text, host_len);
+    ep->host[host_len] = '\0';
+    ep->port = (int)port;
+    return NULL;
+}
+
+/* No format function: help shows no default */
+static const argh_type endpoint_type = {"<host:port>", parse_endpoint, NULL};
+
+TEST(test_custom_builder)
+{
+    ARGV("--max-size", "10M", "-c", "db.local:5432");
+    unsigned long long max_size = 0;
+    endpoint connect = {"localhost", 80};
+    argh_parser p;
+    setup(&p);
+    argh_custom(&p, 's', "max-size", &max_size, &size_type, "Largest file to keep");
+    argh_custom(&p, 'c', "connect", &connect, &endpoint_type, "Server to connect to");
+
+    ASSERT_TRUE(argh_parse(&p, argc, argv));
+    ASSERT_TRUE(max_size == 10ull << 20);
+    ASSERT_STR_EQ(connect.host, "db.local");
+    ASSERT_EQ(connect.port, 5432);
+    ASSERT_TRUE(argh_given(&p, &connect));
+}
+
+static unsigned long long t_cache_size = 64ull << 10;
+
+TEST(test_custom_table)
+{
+    static const argh_opt opts[] = {
+        ARGH_CUSTOM(0, "cache", &t_cache_size, &size_type, "Cache size", ARGH_ONCE),
+        ARGH_END,
+    };
+    ARGV("--cache=1G");
+    argh_parser p;
+    setup(&p);
+    argh_table(&p, opts);
+
+    ASSERT_EQ(opts[0].flags, ARGH_ONCE);
+    ASSERT_TRUE(argh_parse(&p, argc, argv));
+    ASSERT_TRUE(t_cache_size == 1ull << 30);
+}
+
+TEST(test_custom_error_uses_reason)
+{
+    ARGV("--max-size", "10Q");
+    unsigned long long max_size = 5;
+    argh_parser p;
+    setup(&p);
+    argh_custom(&p, 's', "max-size", &max_size, &size_type, "");
+
+    ASSERT_FALSE(argh_parse(&p, argc, argv));
+    ASSERT_EQ(argh_last_error(&p)->code, ARGH_E_INVALID_VALUE);
+    ASSERT_STR_EQ(error_text(&p), "invalid value '10Q' for '--max-size': expected a size like 512K, 10M or 1G");
+    ASSERT_TRUE(max_size == 5); /* a failed parse must not touch the variable */
+}
+
+TEST(test_custom_struct_error)
+{
+    ARGV("-c", "db.local:99999");
+    endpoint connect = {"localhost", 80};
+    argh_parser p;
+    setup(&p);
+    argh_custom(&p, 'c', "connect", &connect, &endpoint_type, "");
+
+    ASSERT_FALSE(argh_parse(&p, argc, argv));
+    ASSERT_STR_EQ(error_text(&p), "invalid value 'db.local:99999' for '-c': port must be 1-65535");
+}
+
+TEST(test_custom_help)
+{
+    ARGV("--help");
+    unsigned long long max_size = 64ull << 20;
+    endpoint connect = {"localhost", 80};
+    argh_parser p;
+    setup(&p);
+    argh_custom(&p, 's', "max-size", &max_size, &size_type, "Largest file to keep");
+    argh_custom(&p, 'c', "connect", &connect, &endpoint_type, "Server to connect to");
+
+    ASSERT_FALSE(argh_parse(&p, argc, argv));
+    ASSERT_TRUE(strstr(out_text, "  -s, --max-size <size>      Largest file to keep (default: 64M)\n") != NULL);
+    ASSERT_TRUE(strstr(out_text, "  -c, --connect <host:port>  Server to connect to\n") != NULL);
+}
+
+TEST(test_custom_required)
+{
+    ARGV0();
+    endpoint connect = {"", 0};
+    argh_parser p;
+    setup(&p);
+    argh_required(argh_custom(&p, 'c', "connect", &connect, &endpoint_type, ""));
+
+    ASSERT_FALSE(argh_parse(&p, argc, argv));
+    ASSERT_STR_EQ(error_text(&p), "missing required option '--connect'");
+}
+
+TEST(test_custom_config_without_type)
+{
+    ARGV0();
+    unsigned long long max_size = 0;
+    argh_parser p;
+    setup(&p);
+    argh_custom(&p, 's', "max-size", &max_size, NULL, "");
+
+    ASSERT_FALSE(argh_parse(&p, argc, argv));
+    ASSERT_STR_EQ(error_text(&p),
+                  "configuration error: custom option has no argh_type with a parse function (--max-size)");
+}
+
 #ifndef ARGH_NO_COMMANDS
 /* ============================================================================
  * Commands
@@ -1615,6 +1787,13 @@ int main(void)
     RUN_TEST(test_given);
     RUN_TEST(test_empty_argv);
     RUN_TEST(test_parse_twice_resets_state);
+    RUN_TEST(test_custom_builder);
+    RUN_TEST(test_custom_table);
+    RUN_TEST(test_custom_error_uses_reason);
+    RUN_TEST(test_custom_struct_error);
+    RUN_TEST(test_custom_help);
+    RUN_TEST(test_custom_required);
+    RUN_TEST(test_custom_config_without_type);
 #if !defined(ARGH_NO_COMMANDS)
     RUN_TEST(test_command_dispatch);
 #endif

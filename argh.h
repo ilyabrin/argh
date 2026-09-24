@@ -84,7 +84,8 @@ extern "C"
         ARGH_K_LIST,    /* argh_values:   -I a -I b */
         ARGH_K_POS,     /* const char *:  positional argument */
         ARGH_K_REST,    /* argh_values:   all remaining positionals */
-        ARGH_K_GROUP    /* help section heading */
+        ARGH_K_GROUP,   /* help section heading */
+        ARGH_K_CUSTOM   /* your type:     --size 10M, see argh_type */
     };
 
     /* Per-option flags. Stored in argh_opt.flags, combine with |. */
@@ -131,7 +132,8 @@ extern "C"
         unsigned char kind;    /* enum argh_kind */
         unsigned char flags;   /* enum argh_opt_flag */
         void *target;          /* variable the value is written to */
-        const void *extra;     /* ARGH_K_ENUM: NULL-terminated choices */
+        const void *extra;     /* ARGH_K_ENUM: NULL-terminated choices,
+                                  ARGH_K_CUSTOM: const argh_type * */
         const char *help;      /* help text, group title for ARGH_K_GROUP */
         const char *metavar;   /* value name in help, NULL for a default */
     } argh_opt;
@@ -144,6 +146,26 @@ extern "C"
         int count;
         int capacity; /* ARGH_K_LIST only: size of items */
     } argh_values;
+
+    /* A value type of your own, for ARGH_CUSTOM / argh_custom. Define it once
+     * as a constant and reuse it for any number of options:
+     *
+     *     static const argh_type size_type = {"<size>", parse_size, format_size};
+     */
+    typedef struct argh_type
+    {
+        /* Name of the value in help, such as "<size>". NULL for "<value>". */
+        const char *metavar;
+
+        /* Converts text and stores it in *target. Returns NULL on success, or
+         * a short reason on failure, which ends up in the error message:
+         * "invalid value '10Q' for '--size': <reason>". */
+        const char *(*parse)(const char *text, void *target);
+
+        /* Optional: writes the current value of *target as text, so help can
+         * show the default. Return false to show none. NULL for no default. */
+        bool (*format)(const void *target, char *buf, size_t size);
+    } argh_type;
 
     /* Initializer for a list backed by a fixed array:
      *     const char *buf[8];
@@ -254,6 +276,8 @@ extern "C"
     argh_opt *argh_list(argh_parser *p, char short_name, const char *long_name, argh_values *target, const char *help);
     argh_opt *argh_pos(argh_parser *p, const char *name, const char **target, const char *help);
     argh_opt *argh_rest(argh_parser *p, const char *name, argh_values *target, const char *help);
+    argh_opt *argh_custom(argh_parser *p, char short_name, const char *long_name, void *target,
+                          const argh_type *type, const char *help);
     argh_opt *argh_group(argh_parser *p, const char *title);
 
     argh_opt *argh_required(argh_opt *opt);
@@ -337,6 +361,12 @@ extern "C"
 #define ARGH_LIST(s, l, target, ...) ARGH__OPT(s, l, ARGH_K_LIST, argh_values, target, NULL, __VA_ARGS__)
 #define ARGH_POS(name, target, ...) ARGH__OPT(0, name, ARGH_K_POS, const char *, target, NULL, __VA_ARGS__)
 #define ARGH_REST(name, target, ...) ARGH__OPT(0, name, ARGH_K_REST, argh_values, target, NULL, __VA_ARGS__)
+/* No type check here: the argh_type decides what target points to */
+#define ARGH_CUSTOM(s, l, target, type, ...)                                                        \
+    {                                                                                               \
+        (char)(s), (l), (unsigned char)ARGH_K_CUSTOM, (unsigned char)(ARGH__SECOND(__VA_ARGS__)),   \
+            (void *)(target), (const void *)(type), ARGH__FIRST(__VA_ARGS__), NULL                  \
+    }
 #define ARGH_GROUP(title) {0, NULL, (unsigned char)ARGH_K_GROUP, 0, NULL, NULL, (title), NULL}
 #define ARGH_END {0, NULL, (unsigned char)ARGH_K_END, 0, NULL, NULL, NULL, NULL}
 
@@ -543,6 +573,7 @@ extern "C"
         case ARGH_K_STRING:
         case ARGH_K_ENUM:
         case ARGH_K_LIST:
+        case ARGH_K_CUSTOM:
             return true;
         default:
             return false;
@@ -672,7 +703,8 @@ extern "C"
     }
 
     /* Converts and stores one value. v is NULL for flags and counters. */
-    static argh_err argh__store(const argh_opt *o, const char *v, bool negated)
+    /* reason: set to the argh_type's explanation when a custom parse fails */
+    static argh_err argh__store(const argh_opt *o, const char *v, bool negated, const char **reason)
     {
         long l;
         double d;
@@ -735,6 +767,9 @@ extern "C"
             list->items[list->count++] = v;
             return ARGH_E_NONE;
         }
+        case ARGH_K_CUSTOM:
+            *reason = ((const argh_type *)o->extra)->parse(v, o->target);
+            return *reason ? ARGH_E_INVALID_VALUE : ARGH_E_NONE;
         default:
             return ARGH_E_NONE;
         }
@@ -771,11 +806,15 @@ extern "C"
                            bool negated, int argi, char short_name)
     {
         argh_err e;
+        const char *reason = NULL;
         if ((o->flags & ARGH_ONCE) && argh__seen(p, index))
             return argh__fail(p, ARGH_E_REPEATED, argi, o, NULL, short_name);
-        e = argh__store(o, v, negated);
+        e = argh__store(o, v, negated, &reason);
         if (e != ARGH_E_NONE)
+        {
+            p->argh__error.detail = reason;
             return argh__fail(p, e, argi, o, v, short_name);
+        }
         argh__mark(p, index);
         return ARGH__S_OK;
     }
@@ -1211,6 +1250,8 @@ extern "C"
             }
             if (!o->target && o->kind != ARGH_K_GROUP)
                 return argh__config_error(p, "option has no target variable", o);
+            if (o->kind == ARGH_K_CUSTOM && (!o->extra || !((const argh_type *)o->extra)->parse))
+                return argh__config_error(p, "custom option has no argh_type with a parse function", o);
             if (o->kind == ARGH_K_ENUM && !o->extra)
                 return argh__config_error(p, "enum option has no choices", o);
         }
@@ -1471,6 +1512,12 @@ extern "C"
         return argh__add(p, 0, name, ARGH_K_REST, target, NULL, help);
     }
 
+    argh_opt *argh_custom(argh_parser *p, char s, const char *l, void *target, const argh_type *type,
+                          const char *help)
+    {
+        return argh__add(p, s, l, ARGH_K_CUSTOM, target, type, help);
+    }
+
     argh_opt *argh_group(argh_parser *p, const char *title)
     {
         return argh__add(p, 0, NULL, ARGH_K_GROUP, NULL, NULL, title);
@@ -1696,7 +1743,10 @@ extern "C"
             argh__sb_put(&b, "' for '");
             argh__sb_opt_name(&b, e->opt, e->short_name);
             argh__sb_put(&b, "': ");
-            argh__sb_expected(&b, e->opt);
+            if (e->opt->kind == ARGH_K_CUSTOM && e->detail)
+                argh__sb_put(&b, e->detail);
+            else
+                argh__sb_expected(&b, e->opt);
             break;
         case ARGH_E_OUT_OF_RANGE:
             argh__sb_put(&b, "value '");
@@ -1808,6 +1858,12 @@ extern "C"
         case ARGH_K_DOUBLE:
             argh__sb_put(b, "<x>");
             break;
+        case ARGH_K_CUSTOM:
+        {
+            const argh_type *t = (const argh_type *)o->extra;
+            argh__sb_put(b, (t && t->metavar) ? t->metavar : "<value>");
+            break;
+        }
         case ARGH_K_ENUM:
         {
             const char *const *choices = (const char *const *)o->extra;
@@ -1879,7 +1935,7 @@ extern "C"
     /* " (default: ...)" from the variable's current value */
     static void argh__help_default(const argh_parser *p, const argh_opt *o)
     {
-        char num[48];
+        char num[64];
         const char *text = NULL;
 
         if (o->flags & ARGH_REQUIRED)
@@ -1904,6 +1960,17 @@ extern "C"
         case ARGH_K_STRING:
             text = *(const char *const *)o->target;
             break;
+        case ARGH_K_CUSTOM:
+        {
+            const argh_type *t = (const argh_type *)o->extra;
+            num[0] = '\0';
+            if (t->format && t->format(o->target, num, sizeof(num)) && num[0])
+            {
+                num[sizeof(num) - 1] = '\0';
+                text = num;
+            }
+            break;
+        }
         case ARGH_K_ENUM:
         {
             const char *const *choices = (const char *const *)o->extra;
