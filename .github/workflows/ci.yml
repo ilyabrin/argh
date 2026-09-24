@@ -53,3 +53,31 @@ jobs:
           call "%VSDIR%\VC\Auxiliary\Build\vcvars64.bat" || exit /b 1
           cl /nologo /W4 /std:c11 tests\test_argh.c /Fe:test_argh.exe || exit /b 1
           test_argh.exe
+
+  # Temporary: macro prototype check (proto/ branch only)
+  proto-msvc:
+    name: proto / msvc ${{ matrix.pp }}
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        pp: ["traditional", "conforming"]
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build and run prototype
+        shell: cmd
+        run: |
+          for /f "usebackq delims=" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath`) do set VSDIR=%%i
+          call "%VSDIR%\VC\Auxiliary\Build\vcvars64.bat" || exit /b 1
+          if "${{ matrix.pp }}"=="conforming" (set PP=/Zc:preprocessor) else (set PP=)
+          cd proto
+          echo === C11 %PP%
+          cl /nologo /W4 /WX /std:c11 %PP% test_macros.c /Fe:m.exe || exit /b 1
+          m.exe || exit /b 1
+          echo === C++17 %PP%
+          cl /nologo /W4 /WX /std:c++17 %PP% /TP test_macros.c /Fe:mp.exe || exit /b 1
+          mp.exe || exit /b 1
+          echo === wrong type must produce a diagnostic
+          cl /nologo /W4 /std:c11 %PP% /c wrong_type.c > wrong.txt 2>&1
+          type wrong.txt
+          findstr /R /C:"warning C" /C:"error C" wrong.txt || (echo No diagnostic for wrong target type & exit /b 1)
