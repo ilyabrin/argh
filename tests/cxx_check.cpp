@@ -8,11 +8,20 @@ static const char *output = "out.txt";
 static const char *const modes[] = {"fast", "safe", nullptr};
 static int mode;
 
+static const char *parse_level(const char *text, void *target)
+{
+    *static_cast<int *>(target) = text[0] - '0';
+    return nullptr;
+}
+static const argh_type level_type = {"<level>", parse_level, nullptr};
+static int level;
+
 static const argh_opt opts[] = {
     ARGH_FLAG('v', "verbose", &verbose, "Verbose output"),
     ARGH_INT('j', "jobs", &jobs, "Parallel jobs"),
     ARGH_STRING('o', "output", &output, "Output file", ARGH_REQUIRED),
     ARGH_ENUM('m', "mode", &mode, modes, "Mode"),
+    ARGH_CUSTOM('l', "level", &level, &level_type, "Level"),
     ARGH_END,
 };
 

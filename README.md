@@ -100,6 +100,7 @@ $ echo $?
 | `argh_list`   | `ARGH_LIST`   | `argh_values`  | `-I a -I b`                              |
 | `argh_pos`    | `ARGH_POS`    | `const char *` | one positional argument                  |
 | `argh_rest`   | `ARGH_REST`   | `argh_values`  | all remaining positional arguments       |
+| `argh_custom` | `ARGH_CUSTOM` | anything       | your parser, see below                   |
 
 Pass `0` as the short name for a long-only option, and `NULL` as the long name for a short-only one.
 
@@ -121,6 +122,51 @@ argh_rest(&p, "files", &files, "Files to process");
 for (int i = 0; i < files.count; i++)
     puts(files.items[i]);
 ```
+
+### Your own value types
+
+Sizes like `10M`, durations like `30s`, `host:port` pairs: describe the type once with a parse function, then use it for any number of options.
+
+```c
+/* Returns NULL on success, or a short reason that ends up in the error message */
+static const char *parse_size(const char *text, void *target)
+{
+    char *end;
+    unsigned long long value = strtoull(text, &end, 10);
+    if (end == text)
+        return "expected a size like 512K or 10M";
+    if (*end == 'K') { value <<= 10; end++; }
+    else if (*end == 'M') { value <<= 20; end++; }
+    if (*end)
+        return "expected a size like 512K or 10M";
+    *(unsigned long long *)target = value;
+    return NULL;
+}
+
+/* Optional: lets help show the default */
+static bool format_size(const void *target, char *buf, size_t size)
+{
+    snprintf(buf, size, "%lluM", *(const unsigned long long *)target >> 20);
+    return true;
+}
+
+static const argh_type size_type = {"<size>", parse_size, format_size};
+
+unsigned long long max_size = 64ull << 20;
+argh_custom(&p, 's', "max-size", &max_size, &size_type, "Largest file to keep");
+/* or in a table: ARGH_CUSTOM('s', "max-size", &max_size, &size_type, "Largest file to keep") */
+```
+
+```console
+$ ./tool --help
+  -s, --max-size <size>  Largest file to keep (default: 64M)
+
+$ ./tool --max-size 10Q
+tool: invalid value '10Q' for '--max-size': expected a size like 512K or 10M
+Try 'tool --help' for more information.
+```
+
+The target can be anything, including a struct. `argh_type` is a constant, so it lives in read-only memory and can be shared between programs. The format function is optional: without it, help shows no default.
 
 ### Required, hidden, negatable
 
@@ -370,6 +416,7 @@ argh_opt *argh_enum  (argh_parser *p, char s, const char *l, int *target, const 
 argh_opt *argh_list  (argh_parser *p, char s, const char *l, argh_values *target, const char *help);
 argh_opt *argh_pos   (argh_parser *p, const char *name, const char **target, const char *help);
 argh_opt *argh_rest  (argh_parser *p, const char *name, argh_values *target, const char *help);
+argh_opt *argh_custom(argh_parser *p, char s, const char *l, void *target, const argh_type *type, const char *help);
 argh_opt *argh_group (argh_parser *p, const char *title);
 
 /* Modifiers: accept NULL, return their argument */
@@ -429,7 +476,7 @@ if (!argh_parse(&p, argc, argv)) return argh_exit_code(&p);
 
 Planned for upcoming versions:
 
-- **Custom value types** through a callback and constraints between options arrive in v0.3.
+- **Constraints between options** (mutually exclusive, required together) arrive in v0.3.
 - **A reduced build for microcontrollers** (no stdio, no help text) arrives in v0.4. Today argh adds about 12 KB of code and text on Linux.
 - Floating-point values follow the C locale's decimal separator, like `strtod`.
 
