@@ -25,7 +25,7 @@ Machine: Intel Core i5-12400F, Windows 11, GCC 13.2 (MinGW-w64).
 | argh v0.1   |        2.76 µs |               11 |
 | getopt_long |        0.91 µs |      not counted |
 
-argh v0.1 is about 3x slower than `getopt_long`. The main costs are copying every value to the heap and looking options up by string twice: once while parsing and once in each `argh_get_*` call. The v0.2 design removes both.
+argh v0.1 is about 3x slower than `getopt_long`. CI shows the same ratio on Linux (GCC, Clang) and macOS (Clang), so this is not specific to one machine. The main costs are copying every value to the heap and looking options up by string twice: once while parsing and once in each `argh_get_*` call. The v0.2 design removes both.
 
 In absolute terms, both finish in a few microseconds, far below anything a user can notice at program startup. The numbers matter for embedded targets and for tools that parse many command lines, such as shells, test runners and fuzzers.
 
@@ -51,7 +51,8 @@ The `.text` added to a minimal 3-option program, compared to the same program wi
 
 Read this one with care:
 
-- **getopt_long is only counted where it is linked statically**, as in MinGW. On Linux and macOS it lives in the shared C library, so it adds almost nothing to your binary, and this table does not apply.
+- **getopt_long is only counted where it is linked statically**, as in MinGW. On Linux it lives in the shared C library and adds about 0.6 KB (CI measurement), while argh adds about 7.5 KB. For desktop Linux, getopt is the smaller option.
+- macOS is not measured: its `size` tool reports page-aligned segments, which hides differences of a few KB.
 - On MinGW, `getopt_long` pulls in error-printing and locale code, which explains most of its size.
 - Functions that argh uses from the C library itself (`strtol`, `strtod`, `printf`) are not counted when the C library is shared.
 

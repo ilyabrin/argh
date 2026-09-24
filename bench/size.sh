@@ -9,7 +9,11 @@ trap 'rm -rf "$OUT"' EXIT
 FLAGS="-std=c99 -Os -ffunction-sections -fdata-sections -Wl,--gc-sections"
 EXE=
 case "$(uname -s)" in
-    Darwin) FLAGS="-std=c99 -Os -Wl,-dead_strip" ;;
+    Darwin)
+        # Mach-O `size` reports page-aligned segments, which hides KB-scale deltas
+        echo "Code size is not measured on macOS; see BENCHMARKS.md"
+        exit 0
+        ;;
     MINGW* | MSYS* | CYGWIN*) EXE=.exe ;;
 esac
 
