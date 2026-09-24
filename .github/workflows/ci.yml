@@ -44,9 +44,10 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: ilammy/msvc-dev-cmd@v1
       - name: Build and run tests
         shell: cmd
         run: |
+          for /f "usebackq delims=" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath`) do set VSDIR=%%i
+          call "%VSDIR%\VC\Auxiliary\Build\vcvars64.bat" || exit /b 1
           cl /nologo /W4 /std:c11 tests\test_argh.c /Fe:test_argh.exe || exit /b 1
           test_argh.exe
