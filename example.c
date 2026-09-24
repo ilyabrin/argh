@@ -1,6 +1,9 @@
 /*
  * Example usage of argh.h
- * Compile: gcc -o example example.c
+ *
+ * Build:  make example   (or: cc -std=c99 -o example example.c)
+ * Try:    ./example --help
+ *         ./example -vv --jobs 8 --mode safe -I src -I include input.txt a b c
  */
 
 #define ARGH_IMPLEMENTATION
@@ -8,86 +11,52 @@
 
 #include <stdio.h>
 
+static const char *const modes[] = {"fast", "safe", "debug", NULL};
+
 int main(int argc, char **argv)
 {
-    argh_Parser parser;
-    argh_init(&parser, argc, argv);
+    /* Defaults are plain initializers */
+    int verbosity = 0;
+    int jobs = 4;
+    double ratio = 1.0;
+    const char *output = "out.txt";
+    int mode = 0;
+    bool color = true;
+    const char *include_buf[8];
+    argh_values includes = ARGH_VALUES(include_buf);
+    const char *input = NULL;
+    argh_values files = {0};
 
-    /* Define options */
-    argh_add(&parser,
-             "v", "verbose",
-             ARGH_BOOL,
-             NULL,
-             "Enable verbose output");
+    argh_parser p;
+    argh_init(&p, "example", "Shows what argh.h can parse");
+    argh_version(&p, "1.0.0");
 
-    argh_add(&parser,
-             "o", "output",
-             ARGH_STRING,
-             "output.txt",
-             "Output file path");
+    argh_count(&p, 'v', "verbose", &verbosity, "More output, repeat for even more");
+    argh_int(&p, 'j', "jobs", &jobs, "Parallel jobs");
+    argh_double(&p, 'r', "ratio", &ratio, "Processing ratio");
+    argh_string(&p, 'o', "output", &output, "Output file");
+    argh_enum(&p, 'm', "mode", &mode, modes, "Execution mode");
+    argh_list(&p, 'I', "include", &includes, "Add an include directory");
 
-    argh_add(&parser,
-             "n", "count",
-             ARGH_INT,
-             "10",
-             "Number of iterations");
+    argh_group(&p, "Display");
+    argh_negatable(argh_flag(&p, 0, "color", &color, "Colored output"));
 
-    argh_add(&parser,
-             "r", "ratio",
-             ARGH_FLOAT,
-             "1.0",
-             "Processing ratio (0.0-1.0)");
+    argh_pos(&p, "input", &input, "Input file");
+    argh_rest(&p, "files", &files, "Extra files");
 
-    argh_add(&parser,
-             NULL, "config",
-             ARGH_STRING,
-             NULL,
-             "Configuration file (required)");
+    if (!argh_parse(&p, argc, argv))
+        return argh_exit_code(&p);
 
-    argh_require(&parser, "config");
-
-    argh_add(&parser,
-             "h", "help",
-             ARGH_BOOL,
-             NULL,
-             "Show this help message");
-
-    /* Parse */
-    if (!argh_parse(&parser))
-    {
-        argh_print_error(&parser);
-        printf("\n");
-        argh_print_help(&parser);
-        argh_free(&parser);
-        return 1;
-    }
-
-    /* Check for help */
-    if (argh_has(&parser, "help"))
-    {
-        argh_print_help(&parser);
-        argh_free(&parser);
-        return 0;
-    }
-
-    /* Get values */
-    printf("Configuration:\n");
-    printf("  Verbose: %s\n", argh_get_bool(&parser, "verbose") ? "yes" : "no");
-    printf("  Output: %s\n", argh_get_string(&parser, "output"));
-    printf("  Count: %d\n", argh_get_int(&parser, "count"));
-    printf("  Ratio: %.2f\n", argh_get_float(&parser, "ratio"));
-    printf("  Config: %s\n", argh_get_string(&parser, "config"));
-
-    /* Positional arguments */
-    if (parser.positional_count > 0)
-    {
-        printf("\nPositional arguments (%d):\n", (int)parser.positional_count);
-        for (size_t i = 0; i < parser.positional_count; i++)
-        {
-            printf("  [%d] %s\n", (int)i, parser.positional[i]);
-        }
-    }
-
-    argh_free(&parser);
+    printf("verbosity: %d\n", verbosity);
+    printf("jobs:      %d%s\n", jobs, argh_given(&p, &jobs) ? "" : " (default)");
+    printf("ratio:     %g\n", ratio);
+    printf("output:    %s\n", output);
+    printf("mode:      %s\n", modes[mode]);
+    printf("color:     %s\n", color ? "yes" : "no");
+    for (int i = 0; i < includes.count; i++)
+        printf("include:   %s\n", includes.items[i]);
+    printf("input:     %s\n", input);
+    for (int i = 0; i < files.count; i++)
+        printf("file:      %s\n", files.items[i]);
     return 0;
 }
