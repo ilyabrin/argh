@@ -526,6 +526,16 @@ if (!argh_parse(&p, argc, argv)) return argh_exit_code(&p);
 | define and check your own `--help` | built in                               |
 | `argh_free`                        | nothing to free                        |
 
+## Examples
+
+Three complete programs in [examples/](examples), each a real kind of tool:
+
+- **[wc](examples/wc.c)**: counts lines, words and bytes like the Unix tool. The basics in about 40 lines.
+- **[logship](examples/logship.c)**: sends log files to a collector. An option table with groups, sizes and durations as custom types, rules and a validator.
+- **[pkg](examples/pkg)**: a package manager front end in the style of `cargo`. Nested commands spread over several files, global options, handlers with an application context.
+
+`make examples` builds them, `make smoke` runs them and checks their output.
+
 ## Known limitations
 
 Planned for upcoming versions:

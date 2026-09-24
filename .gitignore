@@ -48,3 +48,11 @@ desktop.ini
 
 # Logs
 *.log
+
+# Binaries built by make (no extension on Linux and macOS)
+/test_argh
+/bench_parse
+/cxx_check
+/examples/wc
+/examples/logship
+/examples/pkg/pkg

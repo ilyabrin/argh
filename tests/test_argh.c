@@ -1040,6 +1040,29 @@ TEST(test_table_with_flags_argument)
     ASSERT_STR_EQ(t_out, "x");
 }
 
+TEST(test_table_metavar)
+{
+    static const char *key;
+    static int n;
+    static const argh_opt opts[] = {
+        ARGH_STRING(0, "tls-key", &key, "Client key", 0, "<file>"),
+        ARGH_INT('n', "count", &n, "Count", ARGH_REQUIRED, "<count>"),
+        ARGH_INT(0, "plain", &n, "Plain"),
+        ARGH_END,
+    };
+    ARGV("--help");
+    argh_parser p;
+    setup(&p);
+    argh_table(&p, opts);
+
+    ASSERT_STR_EQ(opts[0].metavar, "<file>");
+    ASSERT_EQ(opts[1].flags, ARGH_REQUIRED);
+    ASSERT_TRUE(opts[2].metavar == NULL);
+    ASSERT_FALSE(argh_parse(&p, argc, argv));
+    ASSERT_TRUE(strstr(out_text, "--tls-key <file>") != NULL);
+    ASSERT_TRUE(strstr(out_text, "--count <count>") != NULL);
+}
+
 TEST(test_table_and_builder_mixed)
 {
     static int table_value;
@@ -1873,6 +1896,62 @@ TEST(test_command_config_duplicate_with_global)
 }
 #endif
 
+/* Like `cargo install --version 1.0`: a command's own --version wins */
+TEST(test_command_own_version_option)
+{
+    static const char *wanted;
+    static bool vflag;
+    static const argh_opt opts[] = {
+        ARGH_STRING(0, "version", &wanted, "Version to install"),
+        ARGH_FLAG('V', "verify", &vflag, "Verify"),
+        ARGH_END,
+    };
+    static const argh_cmd cmds[] = {ARGH_CMD("install", "", opts), ARGH_CMD("list", "", NULL), ARGH_CMD_END};
+    char *in_cmd[] = {(char *)"tool", (char *)"install", (char *)"--version", (char *)"1.2", (char *)"-V", NULL};
+    char *at_root[] = {(char *)"tool", (char *)"--version", NULL};
+    char *other_cmd[] = {(char *)"tool", (char *)"list", (char *)"-V", NULL};
+    argh_parser p;
+
+    setup(&p);
+    argh_version(&p, "3.0");
+    argh_commands(&p, cmds);
+    ASSERT_TRUE(argh_parse(&p, 5, in_cmd));
+    ASSERT_STR_EQ(wanted, "1.2");
+    ASSERT_TRUE(vflag);
+
+    reset_output();
+    ASSERT_FALSE(argh_parse(&p, 2, at_root));
+    ASSERT_STR_EQ(out_text, "prog 3.0\n");
+
+    {
+        /* help inside the command lists no built-in version line */
+        char *help[] = {(char *)"tool", (char *)"install", (char *)"--help", NULL};
+        reset_output();
+        ASSERT_FALSE(argh_parse(&p, 3, help));
+        ASSERT_TRUE(strstr(out_text, "Print version") == NULL);
+    }
+
+    reset_output();
+    ASSERT_FALSE(argh_parse(&p, 3, other_cmd)); /* list has no -V of its own */
+    ASSERT_STR_EQ(out_text, "prog 3.0\n");
+}
+
+#ifndef NDEBUG
+TEST(test_command_config_reserved_help_option)
+{
+    static const char *host;
+    static const argh_opt opts[] = {ARGH_STRING('h', "host", &host, ""), ARGH_END};
+    static const argh_cmd cmds[] = {ARGH_CMD("connect", "", opts), ARGH_CMD_END};
+    ARGV("connect");
+    argh_parser p;
+    setup(&p);
+    argh_commands(&p, cmds);
+
+    ASSERT_FALSE(argh_parse(&p, argc, argv));
+    ASSERT_STR_EQ(error_text(&p), "configuration error: name reserved for help, see ARGH_NO_AUTO_HELP (--host)");
+}
+#endif
+
 TEST(test_command_posix_mode_at_leaf)
 {
     ARGV("exec", "ls", "-v");
@@ -2061,6 +2140,7 @@ int main(void)
     RUN_TEST(test_name_from_argv0);
 
     RUN_TEST(test_table_with_flags_argument);
+    RUN_TEST(test_table_metavar);
     RUN_TEST(test_table_and_builder_mixed);
     RUN_TEST(test_given);
     RUN_TEST(test_empty_argv);
@@ -2152,6 +2232,10 @@ int main(void)
 #endif
 #if !defined(ARGH_NO_COMMANDS)
     RUN_TEST(test_command_posix_mode_at_leaf);
+    RUN_TEST(test_command_own_version_option);
+#ifndef NDEBUG
+    RUN_TEST(test_command_config_reserved_help_option);
+#endif
 #endif
 #if !defined(ARGH_NO_SUGGEST)
     RUN_TEST(test_suggest_options);
