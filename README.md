@@ -278,6 +278,20 @@ Need `-h` for something else, like `--host`? Turn the built-ins off with `argh_s
 
 On an error, `argh_parse` prints a one-line message plus a hint to stderr and returns `false`. `argh_exit_code` then returns 2, the Unix convention for usage errors.
 
+Typos in long options and command names get a suggestion:
+
+```console
+$ ./tool --verbsoe build
+tool: unknown option '--verbsoe' (did you mean '--verbose'?)
+Try 'tool --help' for more information.
+
+$ ./tool remote ad origin https://example.com/app.git
+tool: unknown command 'ad' (did you mean 'add'?)
+Try 'tool remote --help' for more information.
+```
+
+Suggestions only name options and commands that are valid at that point, never hidden options, and only when the match is close (up to 2 edits, counting a swap of two letters as one). They are computed only after an error, so they cost nothing on a successful parse. `ARGH_NO_SUGGEST` removes them.
+
 To handle errors yourself:
 
 ```c
@@ -329,6 +343,7 @@ Define before including `argh.h`:
 | `ARGH_MAX_OPTS`    |      64 | Options on the active command path, all tables combined        |
 | `ARGH_MAX_TABLES`  |       8 | Tables per parser. The builder counts as one                   |
 | `ARGH_MAX_DEPTH`   |       4 | Levels of nested commands                                      |
+| `ARGH_NO_SUGGEST`  |         | Define to remove "did you mean" suggestions (about 0.8 KB)     |
 
 Mistakes in the definitions, such as two options with the same name or a missing variable, are reported by `argh_parse` as `ARGH_E_CONFIG`. The checks for duplicate names and for the command tree run in builds without `NDEBUG`.
 
@@ -413,7 +428,7 @@ if (!argh_parse(&p, argc, argv)) return argh_exit_code(&p);
 
 Planned for upcoming versions:
 
-- **Custom value types** through a callback, "did you mean" suggestions and constraints between options arrive in v0.3.
+- **Custom value types** through a callback and constraints between options arrive in v0.3.
 - **A reduced build for microcontrollers** (no stdio, no help text) arrives in v0.4. Today argh adds about 12 KB of code and text on Linux.
 - Floating-point values follow the C locale's decimal separator, like `strtod`.
 

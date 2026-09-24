@@ -33,6 +33,7 @@
  *   ARGH_MAX_OPTS     options on the active command path, all tables (64)
  *   ARGH_MAX_TABLES   tables per parser, the builder counts as one (8)
  *   ARGH_MAX_DEPTH    levels of nested commands (4)
+ *   ARGH_NO_SUGGEST   no "did you mean" suggestions in error messages
  *
  * LICENSE: MIT (see end of file)
  */
@@ -156,6 +157,8 @@ extern "C"
         const char *value;   /* offending text, if any */
         char short_name;     /* offending short option, if any */
         const char *detail;  /* extra context for ARGH_E_CONFIG */
+        const char *suggestion; /* closest valid name for an unknown option
+                                   or command (without dashes), or NULL */
     } argh_error;
 
     struct argh_parser;
@@ -1015,6 +1018,116 @@ extern "C"
     }
 #endif
 
+#ifndef ARGH_NO_SUGGEST
+    /* Longest name considered for suggestions */
+#define ARGH__SUGGEST_MAX 64
+
+    /* Optimal string alignment distance: edits (insert, delete, replace)
+     * plus swaps of adjacent characters, so "verbsoe" is 1 from "verbose".
+     * Three rolling rows on the stack; returns a large value past the cap. */
+    static int argh__distance(const char *a, size_t alen, const char *b, size_t blen)
+    {
+        unsigned char rows[3][ARGH__SUGGEST_MAX + 1];
+        unsigned char *prev2 = rows[0], *prev = rows[1], *cur = rows[2];
+        size_t i, j;
+
+        if (alen > ARGH__SUGGEST_MAX || blen > ARGH__SUGGEST_MAX)
+            return 1000;
+        for (j = 0; j <= blen; j++)
+            prev[j] = (unsigned char)j;
+        for (i = 1; i <= alen; i++)
+        {
+            unsigned char *t;
+            cur[0] = (unsigned char)i;
+            for (j = 1; j <= blen; j++)
+            {
+                int cost = a[i - 1] != b[j - 1];
+                int best = prev[j] + 1;              /* delete */
+                if (cur[j - 1] + 1 < best)
+                    best = cur[j - 1] + 1;           /* insert */
+                if (prev[j - 1] + cost < best)
+                    best = prev[j - 1] + cost;       /* replace */
+                if (i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1] &&
+                    prev2[j - 2] + 1 < best)
+                    best = prev2[j - 2] + 1;         /* swap */
+                cur[j] = (unsigned char)best;
+            }
+            t = prev2;
+            prev2 = prev;
+            prev = cur;
+            cur = t;
+        }
+        return prev[blen];
+    }
+
+    typedef struct
+    {
+        const char *typed;
+        size_t len;
+        const char *best;
+        int best_distance;
+    } argh__suggester;
+
+    /* Close enough: at most 2 edits, and at most a third of the longer word,
+     * so short inputs don't get far-fetched matches ("ad" -> "add" yes,
+     * "jb" -> "jobs" no) */
+    static void argh__consider(argh__suggester *s, const char *candidate)
+    {
+        int d;
+        size_t clen, longer;
+        if (!candidate)
+            return;
+        clen = strlen(candidate);
+        longer = clen > s->len ? clen : s->len;
+        d = argh__distance(s->typed, s->len, candidate, clen);
+        if (d <= 2 && (size_t)d * 3 <= longer && d < s->best_distance)
+        {
+            s->best = candidate;
+            s->best_distance = d;
+        }
+    }
+
+    /* Runs only after a failed parse, so it costs nothing on success */
+    static void argh__suggest(argh_parser *p)
+    {
+        argh_error *e = &p->argh__error;
+        argh__suggester s;
+        s.best = NULL;
+        s.best_distance = 1000;
+
+        if (e->code == ARGH_E_UNKNOWN_OPTION && !e->short_name && e->value)
+        {
+            const char *eq;
+            s.typed = e->value + 2; /* skip "--" */
+            eq = strchr(s.typed, '=');
+            s.len = eq ? (size_t)(eq - s.typed) : strlen(s.typed);
+            ARGH__EACH(p, o, index)
+            {
+                (void)index;
+                if (argh__is_option_kind(o->kind) && !(o->flags & ARGH_HIDDEN))
+                    argh__consider(&s, o->long_name);
+            }
+            if (argh__auto_help(p))
+            {
+                argh__consider(&s, "help");
+                if (p->argh__version)
+                    argh__consider(&s, "version");
+            }
+        }
+        else if (e->code == ARGH_E_UNKNOWN_COMMAND && e->value)
+        {
+            const argh_cmd *c;
+            s.typed = e->value;
+            s.len = strlen(s.typed);
+            for (c = argh__level_commands(p); c && c->name; c++)
+                argh__consider(&s, c->name);
+            if (argh__auto_help(p))
+                argh__consider(&s, "help");
+        }
+        e->suggestion = s.best;
+    }
+#endif
+
     /* Duplicate names on the active path: quadratic, so debug builds only */
     static int argh__check_duplicates(argh_parser *p)
     {
@@ -1373,6 +1486,10 @@ extern "C"
         if (st == ARGH__S_OK)
             st = argh__check_required(p);
 
+#ifndef ARGH_NO_SUGGEST
+        if (st == ARGH__S_ERROR)
+            argh__suggest(p);
+#endif
         p->argh__status = st;
         switch (st)
         {
@@ -1511,6 +1628,12 @@ extern "C"
                 argh__sb_putn(&b, e->value, eq ? (size_t)(eq - e->value) : strlen(e->value));
             }
             argh__sb_char(&b, '\'');
+            if (e->suggestion)
+            {
+                argh__sb_put(&b, " (did you mean '--");
+                argh__sb_put(&b, e->suggestion);
+                argh__sb_put(&b, "'?)");
+            }
             break;
         case ARGH_E_MISSING_VALUE:
             argh__sb_put(&b, "option '");
@@ -1582,6 +1705,12 @@ extern "C"
             argh__sb_put(&b, "unknown command '");
             argh__sb_put(&b, e->value);
             argh__sb_char(&b, '\'');
+            if (e->suggestion)
+            {
+                argh__sb_put(&b, " (did you mean '");
+                argh__sb_put(&b, e->suggestion);
+                argh__sb_put(&b, "'?)");
+            }
             break;
         case ARGH_E_MISSING_COMMAND:
             if (p->argh__depth)

@@ -610,8 +610,9 @@ TEST(test_unknown_long)
 
     ASSERT_FALSE(argh_parse(&p, argc, argv));
     ASSERT_EQ(argh_last_error(&p)->argv_index, 1);
-    ASSERT_STR_EQ(error_text(&p), "unknown option '--verbos'");
-    ASSERT_STR_EQ(err_text, "prog: unknown option '--verbos'\nTry 'prog --help' for more information.\n");
+    ASSERT_STR_EQ(error_text(&p), "unknown option '--verbos' (did you mean '--verbose'?)");
+    ASSERT_STR_EQ(err_text, "prog: unknown option '--verbos' (did you mean '--verbose'?)\n"
+                            "Try 'prog --help' for more information.\n");
     ASSERT_EQ(argh_exit_code(&p), 2);
 }
 
@@ -1246,8 +1247,9 @@ TEST(test_command_unknown)
 
     ASSERT_FALSE(argh_parse(&p, argc, argv));
     ASSERT_EQ(argh_exit_code(&p), 2);
-    ASSERT_STR_EQ(error_text(&p), "unknown command 'biuld'");
-    ASSERT_STR_EQ(err_text, "tool: unknown command 'biuld'\nTry 'tool --help' for more information.\n");
+    ASSERT_STR_EQ(error_text(&p), "unknown command 'biuld' (did you mean 'build'?)");
+    ASSERT_STR_EQ(err_text, "tool: unknown command 'biuld' (did you mean 'build'?)\n"
+                            "Try 'tool --help' for more information.\n");
 }
 
 TEST(test_command_missing)
@@ -1428,6 +1430,92 @@ TEST(test_command_posix_mode_at_leaf)
     ASSERT_STR_EQ(c_args.items[1], "-v");
 }
 
+/* ============================================================================
+ * Suggestions
+ * ============================================================================ */
+
+/* Parses one argument against a fixed set of options, returns the suggestion */
+static const char *suggestion_for(const char *arg)
+{
+    static bool verbose, dry_run, color, secret;
+    static int jobs;
+    char *argv[] = {(char *)"prog", (char *)arg, NULL};
+    argh_parser p;
+    setup(&p);
+    argh_version(&p, "1.0");
+    argh_flag(&p, 'v', "verbose", &verbose, "");
+    argh_flag(&p, 'n', "dry-run", &dry_run, "");
+    argh_flag(&p, 0, "color", &color, "");
+    argh_hidden(argh_flag(&p, 0, "secret-mode", &secret, ""));
+    argh_int(&p, 'j', "jobs", &jobs, "");
+    argh_parse(&p, 2, argv);
+    return argh_last_error(&p)->suggestion;
+}
+
+TEST(test_suggest_options)
+{
+    ASSERT_STR_EQ(suggestion_for("--verbos"), "verbose");    /* deletion */
+    ASSERT_STR_EQ(suggestion_for("--verbosee"), "verbose");  /* insertion */
+    ASSERT_STR_EQ(suggestion_for("--verbsoe"), "verbose");   /* swap */
+    ASSERT_STR_EQ(suggestion_for("--dryrun"), "dry-run");
+    ASSERT_STR_EQ(suggestion_for("--colour"), "color");
+}
+
+TEST(test_suggest_value_form)
+{
+    ASSERT_STR_EQ(suggestion_for("--job=4"), "jobs");
+}
+
+TEST(test_suggest_builtins)
+{
+    ASSERT_STR_EQ(suggestion_for("--hlep"), "help");
+    ASSERT_STR_EQ(suggestion_for("--versoin"), "version");
+}
+
+TEST(test_suggest_nothing_far_away)
+{
+    ASSERT_TRUE(suggestion_for("--output") == NULL);
+    ASSERT_TRUE(suggestion_for("--jb") == NULL);      /* 2 edits on a 2-letter word */
+    ASSERT_TRUE(suggestion_for("-x") == NULL);        /* short options: no suggestion */
+    ASSERT_TRUE(suggestion_for("--secret-mod") == NULL); /* hidden options stay hidden */
+}
+
+TEST(test_suggest_commands)
+{
+    char *nested[] = {(char *)"tool", (char *)"remote", (char *)"ad", NULL};
+    char *help[] = {(char *)"tool", (char *)"hepl", NULL};
+    argh_parser p;
+
+    setup_commands(&p);
+    ASSERT_FALSE(argh_parse(&p, 3, nested));
+    ASSERT_STR_EQ(error_text(&p), "unknown command 'ad' (did you mean 'add'?)");
+
+    setup_commands(&p);
+    ASSERT_FALSE(argh_parse(&p, 2, help));
+    ASSERT_STR_EQ(argh_last_error(&p)->suggestion, "help");
+}
+
+TEST(test_suggest_on_command_path)
+{
+    char *argv[] = {(char *)"tool", (char *)"remote", (char *)"add", (char *)"--forse", NULL};
+    char *global[] = {(char *)"tool", (char *)"build", (char *)"--verbos", NULL};
+    char *other[] = {(char *)"tool", (char *)"build", (char *)"--forc", NULL};
+    argh_parser p;
+
+    setup_commands(&p);
+    ASSERT_FALSE(argh_parse(&p, 4, argv));
+    ASSERT_STR_EQ(argh_last_error(&p)->suggestion, "force");
+
+    setup_commands(&p);
+    ASSERT_FALSE(argh_parse(&p, 3, global));
+    ASSERT_STR_EQ(argh_last_error(&p)->suggestion, "verbose");
+
+    /* --force belongs to another command, so it is not suggested */
+    setup_commands(&p);
+    ASSERT_FALSE(argh_parse(&p, 3, other));
+    ASSERT_TRUE(argh_last_error(&p)->suggestion == NULL);
+}
+
 TEST(test_parser_size)
 {
     /* Budget from the design: the core stays small, the builder is extra */
@@ -1532,6 +1620,12 @@ int main(void)
     RUN_TEST(test_command_config_reserved_help);
     RUN_TEST(test_command_config_duplicate_with_global);
     RUN_TEST(test_command_posix_mode_at_leaf);
+    RUN_TEST(test_suggest_options);
+    RUN_TEST(test_suggest_value_form);
+    RUN_TEST(test_suggest_builtins);
+    RUN_TEST(test_suggest_nothing_far_away);
+    RUN_TEST(test_suggest_commands);
+    RUN_TEST(test_suggest_on_command_path);
     RUN_TEST(test_parser_size);
 
     printf("\nRun: %d\nPassed: %d\nFailed: %d\n", tests_run, tests_passed, tests_failed);
