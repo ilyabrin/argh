@@ -270,6 +270,10 @@ make test
 
 Speed, memory and code size compared with `getopt_long`, with the method and caveats: [BENCHMARKS.md](BENCHMARKS.md). Run them with `make bench`.
 
+## Contributing
+
+Bug reports, tests and fixes are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for how to build, test and send a pull request, and [CHANGELOG.md](CHANGELOG.md) for what changed between versions.
+
 ## License
 
 [MIT](LICENSE)
