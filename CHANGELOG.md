@@ -6,6 +6,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-24
+
+Commands, suggestions, custom types and rules. No breaking changes to the v0.2 API.
+
 ### Added
 
 - **Commands**, like `git remote add`: `argh_commands` with `ARGH_CMD` and `ARGH_CMD_GROUP` tables, nested up to `ARGH_MAX_DEPTH` levels. Options of the parser are global and work before and after the command name.
@@ -76,6 +80,7 @@ Compared with the code before the public release:
 
 - `argh_set_description` and `argh_set_help_width`, which had no effect.
 
-[Unreleased]: https://github.com/ilyabrin/argh/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/ilyabrin/argh/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/ilyabrin/argh/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/ilyabrin/argh/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/ilyabrin/argh/releases/tag/v0.1.0

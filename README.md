@@ -10,7 +10,7 @@ int jobs = 4;
 argh_int(&p, 'j', "jobs", &jobs, "Parallel jobs");
 ```
 
-> **Status: early development (v0.2).** Tested on every push, but the API may still change before v1.0.
+> **Status: early development (v0.3).** Tested on every push, but the API may still change before v1.0.
 > Feedback on the API is very welcome.
 
 ## Why argh
@@ -20,7 +20,7 @@ argh_int(&p, 'j', "jobs", &jobs, "Parallel jobs");
 - **Zero heap allocations, no global state.** Strings point into `argv`. Option tables can be `static const`, so they live in read-only memory (flash on microcontrollers).
 - **Help and errors included.** `--help`, `--version`, clear error messages and the right exit codes, without writing any of it.
 - **Strict by design.** Ambiguous input is an error, never a guess. No octal surprises, no prefix matching, no `-o=file`.
-- **As fast as `getopt_long`.** See [Benchmarks](#benchmarks).
+- **Close to `getopt_long` in speed**, while validating every value. See [Benchmarks](#benchmarks).
 
 ## Quick start
 
@@ -539,10 +539,10 @@ Time to set up a parser with 30 options and parse 17 arguments, release builds (
 
 | Platform           | argh (table) | argh (builder) | getopt_long |
 | ------------------ | -----------: | -------------: | ----------: |
-| macOS, Clang       |       447 ns |         499 ns |      476 ns |
-| Linux, GCC         |       549 ns |         618 ns |      511 ns |
-| Linux, Clang       |       628 ns |         671 ns |      625 ns |
-| Windows, MinGW GCC |       934 ns |         979 ns |      853 ns |
+| macOS, Clang       |       422 ns |         450 ns |      399 ns |
+| Linux, Clang       |       707 ns |         780 ns |      629 ns |
+| Linux, GCC         |       723 ns |         807 ns |      618 ns |
+| Windows, MinGW GCC |     1,098 ns |       1,147 ns |      890 ns |
 
 argh makes zero heap allocations. Details, memory, code size and the method: [BENCHMARKS.md](BENCHMARKS.md). Run them with `make bench`.
 

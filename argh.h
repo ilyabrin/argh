@@ -1,5 +1,5 @@
 /*
- * argh.h - v0.2.0 - Single-header command-line argument parser for C
+ * argh.h - v0.3.0 - Single-header command-line argument parser for C
  *
  * Status: early development. The API may change before v1.0.
  *
