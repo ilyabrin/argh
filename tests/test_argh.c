@@ -15,14 +15,19 @@ static int tests_passed = 0;
 static int tests_failed = 0;
 
 #define TEST(name) static void name(void)
+/* A test passes only if it did not bump tests_failed */
 #define RUN_TEST(name)                     \
     do                                     \
     {                                      \
+        int failed_before = tests_failed;  \
         tests_run++;                       \
         printf("  Running %s... ", #name); \
         name();                            \
-        tests_passed++;                    \
-        printf("PASSED\n");                \
+        if (tests_failed == failed_before) \
+        {                                  \
+            tests_passed++;                \
+            printf("PASSED\n");            \
+        }                                  \
     } while (0)
 
 #define ASSERT(cond)                                                                        \
@@ -557,6 +562,74 @@ TEST(test_help_generation)
  * Main
  * ============================================================================ */
 
+/* ============================================================================
+ * Regression tests
+ * ============================================================================ */
+
+TEST(test_double_dash_is_not_a_value)
+{
+    char *argv[] = {"prog", "--output", "--", "file.txt"};
+    argh_Parser parser;
+    argh_init(&parser, 4, argv);
+    argh_add(&parser, "o", "output", ARGH_STRING, NULL, "Output");
+
+    ASSERT_FALSE(argh_parse(&parser));
+    ASSERT_EQ(parser.errors[0].code, ARGH_ERR_MISSING_VALUE);
+    ASSERT_EQ(parser.positional_count, 1);
+    ASSERT_STR_EQ(parser.positional[0], "file.txt");
+    argh_free(&parser);
+}
+
+TEST(test_invalid_bool_value)
+{
+    char *argv[] = {"prog", "--verbose=maybe"};
+    argh_Parser parser;
+    argh_init(&parser, 2, argv);
+    argh_add(&parser, "v", "verbose", ARGH_BOOL, NULL, "Verbose");
+
+    ASSERT_FALSE(argh_parse(&parser));
+    ASSERT_EQ(parser.errors[0].code, ARGH_ERR_INVALID_VALUE);
+    argh_free(&parser);
+}
+
+TEST(test_bool_value_case_insensitive)
+{
+    char *argv[] = {"prog", "--a=YES", "--b=Off"};
+    argh_Parser parser;
+    argh_init(&parser, 3, argv);
+    argh_add(&parser, NULL, "a", ARGH_BOOL, NULL, "A");
+    argh_add(&parser, NULL, "b", ARGH_BOOL, "true", "B");
+
+    ASSERT_TRUE(argh_parse(&parser));
+    ASSERT_TRUE(argh_get_bool(&parser, "a"));
+    ASSERT_FALSE(argh_get_bool(&parser, "b"));
+    argh_free(&parser);
+}
+
+TEST(test_negative_number_as_value)
+{
+    char *argv[] = {"prog", "-n", "-5"};
+    argh_Parser parser;
+    argh_init(&parser, 3, argv);
+    argh_add(&parser, "n", "count", ARGH_INT, "1", "Count");
+
+    ASSERT_TRUE(argh_parse(&parser));
+    ASSERT_EQ(argh_get_int(&parser, "count"), -5);
+    argh_free(&parser);
+}
+
+TEST(test_int_out_of_range)
+{
+    char *argv[] = {"prog", "-n", "99999999999999999999"};
+    argh_Parser parser;
+    argh_init(&parser, 3, argv);
+    argh_add(&parser, "n", "count", ARGH_INT, NULL, "Count");
+
+    ASSERT_FALSE(argh_parse(&parser));
+    ASSERT_EQ(parser.errors[0].code, ARGH_ERR_INVALID_VALUE);
+    argh_free(&parser);
+}
+
 int main(void)
 {
     printf("=== argh.h Test Suite ===\n\n");
@@ -617,6 +690,14 @@ int main(void)
     RUN_TEST(test_short_only_option);
     RUN_TEST(test_multiple_values);
     RUN_TEST(test_help_generation);
+
+    /* Regression tests */
+    printf("\nRegression tests:\n");
+    RUN_TEST(test_double_dash_is_not_a_value);
+    RUN_TEST(test_invalid_bool_value);
+    RUN_TEST(test_bool_value_case_insensitive);
+    RUN_TEST(test_negative_number_as_value);
+    RUN_TEST(test_int_out_of_range);
 
     /* Summary */
     printf("\n=== Test Summary ===\n");

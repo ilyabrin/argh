@@ -1,9 +1,10 @@
 /*
- * argh.h - v1.0.0 - Fast, single-header argument parsing library for C
+ * argh.h - v0.1.0 - Single-header argument parsing library for C
+ *
+ * Status: early development. The API may change before v1.0.
  *
  * Features:
- *   - Single header, pure C, cross-platform
- *   - High performance with minimal allocations
+ *   - Single header, pure C99, no dependencies beyond the C standard library
  *   - Support for short (-v) and long (--verbose) options
  *   - Required and optional arguments
  *   - Positional arguments
@@ -37,7 +38,7 @@
  *       int count = argh_get_int(&parser, "count");
  *
  *       // Get positional arguments
- *       for (int i = 0; i < parser.positional_count; i++) {
+ *       for (size_t i = 0; i < parser.positional_count; i++) {
  *           printf("Positional: %s\n", parser.positional[i]);
  *       }
  *
@@ -50,13 +51,6 @@
 
 #ifndef ARGH_H_INCLUDED
 #define ARGH_H_INCLUDED
-
-/* MSVC compatibility */
-#ifdef _MSC_VER
-#define _CRT_SECURE_NO_WARNINGS
-#define strcasecmp _stricmp
-#define strncasecmp _strnicmp
-#endif
 
 #include <stddef.h>
 #include <stdbool.h>
@@ -198,10 +192,6 @@ extern "C"
 
     /* Help generation */
     void argh_print_help(argh_Parser *parser);
-    void argh_set_description(argh_Parser *parser, const char *desc);
-
-    /* Advanced: set custom width for help output */
-    void argh_set_help_width(argh_Parser *parser, int width);
 
 #ifdef __cplusplus
 }
@@ -221,21 +211,11 @@ extern "C"
 #include <ctype.h>
 #include <errno.h>
 #include <float.h>
-
-#ifndef ARGH_HELP_WIDTH
-#define ARGH_HELP_WIDTH 80
-#endif
+#include <limits.h>
 
 /* ============================================================================
  * Internal utilities
  * ============================================================================ */
-
-/* Suppress unused function warnings for platform-specific code */
-#ifdef __GNUC__
-#define ARGH_UNUSED __attribute__((unused))
-#else
-#define ARGH_UNUSED
-#endif
 
 static int argh__strcmp(const char *a, const char *b)
 {
@@ -259,30 +239,17 @@ static char *argh__strdup(const char *s)
     return dup;
 }
 
-ARGH_UNUSED static void argh__trim(char *str)
+/* ASCII case-insensitive comparison; strcasecmp is POSIX, not C99 */
+static bool argh__strieq(const char *a, const char *b)
 {
-    if (!str || !*str)
-        return;
-
-    /* Trim leading space */
-    char *start = str;
-    while (isspace((unsigned char)*start))
-        start++;
-
-    /* Trim trailing space */
-    char *end = start + strlen(start) - 1;
-    while (end > start && isspace((unsigned char)*end))
-        end--;
-
-    /* Write result */
-    size_t len = end - start + 1;
-    memmove(str, start, len);
-    str[len] = '\0';
-}
-
-ARGH_UNUSED static bool argh__is_short(const char *arg)
-{
-    return arg && arg[0] == '-' && arg[1] && arg[1] != '-' && isdigit((unsigned char)arg[1]);
+    while (*a && *b)
+    {
+        if (tolower((unsigned char)*a) != tolower((unsigned char)*b))
+            return false;
+        a++;
+        b++;
+    }
+    return *a == *b;
 }
 
 static bool argh__is_short_option(const char *arg)
@@ -298,6 +265,12 @@ static bool argh__is_long(const char *arg)
 static bool argh__is_option(const char *arg)
 {
     return argh__is_short_option(arg) || argh__is_long(arg);
+}
+
+/* True if arg can be consumed as the value of the preceding option */
+static bool argh__is_value(const char *arg)
+{
+    return arg && !argh__is_option(arg) && strcmp(arg, "--") != 0;
 }
 
 static argh_Option *argh__find_option(argh_Parser *parser, const char *name)
@@ -358,14 +331,14 @@ static bool argh__parse_bool(const char *str, bool *out)
     while (isspace((unsigned char)*s))
         s++;
 
-    if (strcasecmp(s, "true") == 0 || strcasecmp(s, "1") == 0 ||
-        strcasecmp(s, "yes") == 0 || strcasecmp(s, "on") == 0)
+    if (argh__strieq(s, "true") || argh__strieq(s, "1") ||
+        argh__strieq(s, "yes") || argh__strieq(s, "on"))
     {
         *out = true;
         return true;
     }
-    if (strcasecmp(s, "false") == 0 || strcasecmp(s, "0") == 0 ||
-        strcasecmp(s, "no") == 0 || strcasecmp(s, "off") == 0)
+    if (argh__strieq(s, "false") || argh__strieq(s, "0") ||
+        argh__strieq(s, "no") || argh__strieq(s, "off"))
     {
         *out = false;
         return true;
@@ -653,7 +626,7 @@ bool argh_parse(argh_Parser *parser)
             if (!value)
             {
                 /* Try next argument as value */
-                if (i + 1 < parser->argc && !argh__is_option(parser->argv[i + 1]))
+                if (i + 1 < parser->argc && argh__is_value(parser->argv[i + 1]))
                 {
                     i++;
                     value = parser->argv[i];
@@ -718,11 +691,12 @@ bool argh_parse(argh_Parser *parser)
             }
             else
             {
-                bool bval;
+                bool bval = false;
                 if (!argh__parse_bool(value, &bval))
                 {
                     argh__add_error(parser, ARGH_ERR_INVALID_VALUE,
                                     opt->long_name, "Invalid boolean value");
+                    continue;
                 }
                 opt->value = bval ? "true" : "false";
             }
@@ -863,22 +837,6 @@ void argh_print_error(argh_Parser *parser)
             fprintf(stderr, "; ");
     }
     fprintf(stderr, "\n");
-}
-
-static int g_help_width = ARGH_HELP_WIDTH;
-
-void argh_set_help_width(argh_Parser *parser, int width)
-{
-    (void)parser;
-    g_help_width = width;
-}
-
-void argh_set_description(argh_Parser *parser, const char *desc)
-{
-    /* Store description - for simplicity we just print it in help */
-    /* In a more complex implementation, this would be stored in the parser */
-    (void)parser;
-    (void)desc;
 }
 
 void argh_print_help(argh_Parser *parser)
