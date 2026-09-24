@@ -6,19 +6,18 @@
 
 int main(int argc, char **argv)
 {
-    argh_Parser p;
-    argh_init(&p, argc, argv);
-    argh_add(&p, "v", "verbose", ARGH_BOOL, NULL, "Verbose output");
-    argh_add(&p, "n", "count", ARGH_INT, "10", "Iterations");
-    argh_add(&p, "o", "output", ARGH_STRING, "out.txt", "Output file");
-    if (!argh_parse(&p))
-    {
-        argh_print_error(&p);
-        argh_print_help(&p);
-        return 1;
-    }
-    printf("%d %d %s\n", argh_get_bool(&p, "verbose"), argh_get_int(&p, "count"),
-           argh_get_string(&p, "output"));
-    argh_free(&p);
+    bool verbose = false;
+    int count = 10;
+    const char *output = "out.txt";
+
+    argh_parser p;
+    argh_init(&p, NULL, NULL);
+    argh_flag(&p, 'v', "verbose", &verbose, "Verbose output");
+    argh_int(&p, 'n', "count", &count, "Iterations");
+    argh_string(&p, 'o', "output", &output, "Output file");
+    if (!argh_parse(&p, argc, argv))
+        return argh_exit_code(&p);
+
+    printf("%d %d %s\n", verbose, count, output);
     return 0;
 }

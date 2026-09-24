@@ -70,42 +70,110 @@ static double now_ns(void)
 
 /* ------------------------------------------------------------------------ */
 
-static void run_argh(char **argv)
+/* Variables the options write to, reset before every parse */
+static struct
 {
-    argh_Parser p;
-    argh_init(&p, WORKLOAD_ARGC, argv);
+    bool verbose, quiet, all, brief, color, force;
+    int jobs, level, threads;
+    double ratio;
+    const char *output, *name;
+    const char *filler[NUM_FILLER];
+    argh_values rest;
+} v;
 
-    argh_add(&p, "v", "verbose", ARGH_BOOL, NULL, "");
-    argh_add(&p, "q", "quiet", ARGH_BOOL, NULL, "");
-    argh_add(&p, "o", "output", ARGH_STRING, NULL, "");
-    argh_add(&p, "j", "jobs", ARGH_INT, "1", "");
-    argh_add(&p, "a", "all", ARGH_BOOL, NULL, "");
-    argh_add(&p, "b", "brief", ARGH_BOOL, NULL, "");
-    argh_add(&p, "c", "color", ARGH_BOOL, NULL, "");
-    argh_add(&p, "l", "level", ARGH_INT, "0", "");
-    argh_add(&p, "r", "ratio", ARGH_DOUBLE, "1.0", "");
-    argh_add(&p, "n", "name", ARGH_STRING, NULL, "");
-    argh_add(&p, "t", "threads", ARGH_INT, "1", "");
-    argh_add(&p, "f", "force", ARGH_BOOL, NULL, "");
-    for (int i = 0; i < NUM_FILLER; i++)
-        argh_add(&p, NULL, filler_long[i], ARGH_STRING, NULL, "");
+static void reset_values(void)
+{
+    memset(&v, 0, sizeof(v));
+    v.jobs = 1;
+    v.threads = 1;
+    v.ratio = 1.0;
+}
 
-    if (!argh_parse(&p))
+static long argh_checksum(void)
+{
+    return v.verbose + v.quiet + v.all + v.brief + v.color + v.force + v.jobs + v.level +
+           v.threads + (long)(v.ratio * 100) + (long)strlen(v.output) + (long)strlen(v.name) +
+           v.rest.count;
+}
+
+static void parse_or_die(argh_parser *p, char **argv)
+{
+    if (!argh_parse(p, WORKLOAD_ARGC, argv))
     {
         fprintf(stderr, "argh: unexpected parse failure\n");
         exit(1);
     }
+}
 
-    long sum = argh_get_bool(&p, "verbose") + argh_get_bool(&p, "quiet") +
-               argh_get_bool(&p, "all") + argh_get_bool(&p, "brief") +
-               argh_get_bool(&p, "color") + argh_get_bool(&p, "force") +
-               argh_get_int(&p, "jobs") + argh_get_int(&p, "level") +
-               argh_get_int(&p, "threads") + (long)(argh_get_double(&p, "ratio") * 100) +
-               (long)strlen(argh_get_string(&p, "output")) +
-               (long)strlen(argh_get_string(&p, "name")) + (long)p.positional_count;
-    g_sink += sum;
+/* Level 1: options added with builder calls on every run */
+static void run_argh_builder(char **argv)
+{
+    argh_parser p;
+    reset_values();
+    argh_init(&p, "prog", NULL);
+    argh_flag(&p, 'v', "verbose", &v.verbose, "");
+    argh_flag(&p, 'q', "quiet", &v.quiet, "");
+    argh_string(&p, 'o', "output", &v.output, "");
+    argh_int(&p, 'j', "jobs", &v.jobs, "");
+    argh_flag(&p, 'a', "all", &v.all, "");
+    argh_flag(&p, 'b', "brief", &v.brief, "");
+    argh_flag(&p, 'c', "color", &v.color, "");
+    argh_int(&p, 'l', "level", &v.level, "");
+    argh_double(&p, 'r', "ratio", &v.ratio, "");
+    argh_string(&p, 'n', "name", &v.name, "");
+    argh_int(&p, 't', "threads", &v.threads, "");
+    argh_flag(&p, 'f', "force", &v.force, "");
+    for (int i = 0; i < NUM_FILLER; i++)
+        argh_string(&p, 0, filler_long[i], &v.filler[i], "");
+    argh_rest(&p, "files", &v.rest, "");
+    parse_or_die(&p, argv);
+    g_sink += argh_checksum();
+}
 
-    argh_free(&p);
+/* Level 2: one static const table, as an embedded program would use */
+static const argh_opt table[] = {
+    ARGH_FLAG('v', "verbose", &v.verbose, ""),
+    ARGH_FLAG('q', "quiet", &v.quiet, ""),
+    ARGH_STRING('o', "output", &v.output, ""),
+    ARGH_INT('j', "jobs", &v.jobs, ""),
+    ARGH_FLAG('a', "all", &v.all, ""),
+    ARGH_FLAG('b', "brief", &v.brief, ""),
+    ARGH_FLAG('c', "color", &v.color, ""),
+    ARGH_INT('l', "level", &v.level, ""),
+    ARGH_DOUBLE('r', "ratio", &v.ratio, ""),
+    ARGH_STRING('n', "name", &v.name, ""),
+    ARGH_INT('t', "threads", &v.threads, ""),
+    ARGH_FLAG('f', "force", &v.force, ""),
+    ARGH_STRING(0, "opt01", &v.filler[0], ""),
+    ARGH_STRING(0, "opt02", &v.filler[1], ""),
+    ARGH_STRING(0, "opt03", &v.filler[2], ""),
+    ARGH_STRING(0, "opt04", &v.filler[3], ""),
+    ARGH_STRING(0, "opt05", &v.filler[4], ""),
+    ARGH_STRING(0, "opt06", &v.filler[5], ""),
+    ARGH_STRING(0, "opt07", &v.filler[6], ""),
+    ARGH_STRING(0, "opt08", &v.filler[7], ""),
+    ARGH_STRING(0, "opt09", &v.filler[8], ""),
+    ARGH_STRING(0, "opt10", &v.filler[9], ""),
+    ARGH_STRING(0, "opt11", &v.filler[10], ""),
+    ARGH_STRING(0, "opt12", &v.filler[11], ""),
+    ARGH_STRING(0, "opt13", &v.filler[12], ""),
+    ARGH_STRING(0, "opt14", &v.filler[13], ""),
+    ARGH_STRING(0, "opt15", &v.filler[14], ""),
+    ARGH_STRING(0, "opt16", &v.filler[15], ""),
+    ARGH_STRING(0, "opt17", &v.filler[16], ""),
+    ARGH_STRING(0, "opt18", &v.filler[17], ""),
+    ARGH_REST("files", &v.rest, ""),
+    ARGH_END,
+};
+
+static void run_argh_table(char **argv)
+{
+    argh_parser p;
+    reset_values();
+    argh_init(&p, "prog", NULL);
+    argh_table(&p, table);
+    parse_or_die(&p, argv);
+    g_sink += argh_checksum();
 }
 
 /* ------------------------------------------------------------------------ */
@@ -213,37 +281,49 @@ static double bench(void (*fn)(char **))
     return best;
 }
 
-int main(void)
+/* Runs one parser on a fresh argv copy and returns its checksum */
+static long checksum_of(void (*fn)(char **))
 {
     char *argv[WORKLOAD_ARGC + 1];
+    memcpy(argv, workload, sizeof(workload));
+    argv[WORKLOAD_ARGC] = NULL;
+    g_sink = 0;
+    fn(argv);
+    return g_sink;
+}
 
-    /* Sanity check both parsers read the same values */
-    memcpy(argv, workload, sizeof(workload));
-    g_sink = 0;
-    run_argh(argv);
-    long argh_result = g_sink;
-    memcpy(argv, workload, sizeof(workload));
-    g_sink = 0;
-    run_getopt(argv);
-    if (argh_result != g_sink)
+int main(void)
+{
+    /* Sanity check: all parsers read the same values */
+    long expected = checksum_of(run_getopt);
+    long builder = checksum_of(run_argh_builder);
+    long table = checksum_of(run_argh_table);
+    if (builder != expected || table != expected)
     {
-        fprintf(stderr, "Parsers disagree: argh=%ld getopt=%ld\n", argh_result, (long)g_sink);
+        fprintf(stderr, "Parsers disagree: getopt=%ld builder=%ld table=%ld\n", expected, builder, table);
         return 1;
     }
 
+    /* argh makes no heap allocations, so the counters are normally unused.
+     * They stay in place to catch any allocation that creeps back in. */
+    (void)counting_malloc;
+    (void)counting_realloc;
     g_allocs = 0;
-    memcpy(argv, workload, sizeof(workload));
-    run_argh(argv);
+    checksum_of(run_argh_builder);
+    checksum_of(run_argh_table);
     size_t allocs = g_allocs;
 
-    double t_argh = bench(run_argh);
+    double t_builder = bench(run_argh_builder);
+    double t_table = bench(run_argh_table);
     double t_getopt = bench(run_getopt);
 
     printf("Workload: %d options defined, %d arguments\n", NUM_OPTS, WORKLOAD_ARGC - 1);
     printf("Best of %d runs x %d iterations\n\n", RUNS, ITERATIONS);
-    printf("%-14s %12s %14s\n", "parser", "ns/parse", "heap allocs");
-    printf("%-14s %12.0f %14zu\n", "argh v0.1", t_argh, allocs);
-    printf("%-14s %12.0f %14s\n", "getopt_long", t_getopt, "not counted");
-    printf("\nsizeof(argh_Parser) = %zu bytes\n", sizeof(argh_Parser));
+    printf("%-16s %12s %14s\n", "parser", "ns/parse", "heap allocs");
+    printf("%-16s %12.0f %14zu\n", "argh (builder)", t_builder, allocs);
+    printf("%-16s %12.0f %14zu\n", "argh (table)", t_table, allocs);
+    printf("%-16s %12.0f %14s\n", "getopt_long", t_getopt, "not counted");
+    printf("\nsizeof(argh_parser) = %zu bytes (%zu without builder storage)\n", sizeof(argh_parser),
+           sizeof(argh_parser) - sizeof(argh_opt) * (ARGH_BUILDER_CAP + 1));
     return 0;
 }

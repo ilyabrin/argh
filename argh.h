@@ -1,50 +1,37 @@
 /*
- * argh.h - v0.1.0 - Single-header argument parsing library for C
+ * argh.h - v0.2.0 - Single-header command-line argument parser for C
  *
  * Status: early development. The API may change before v1.0.
  *
- * Features:
- *   - Single header, pure C99, no dependencies beyond the C standard library
- *   - Support for short (-v) and long (--verbose) options
- *   - Required and optional arguments
- *   - Positional arguments
- *   - Automatic help generation
- *   - Type-safe value parsing (int, float, string, bool)
- *   - Error handling with descriptive messages
+ * Options write straight into your variables. No heap allocations, no global
+ * state, and option tables can be `static const` (read-only memory).
  *
- * USAGE:
- *   #define ARGH_IMPLEMENTATION before including this header
+ * USAGE
+ *   In exactly one .c file:
+ *       #define ARGH_IMPLEMENTATION
+ *       #include "argh.h"
+ *   Everywhere else just #include "argh.h".
  *
- * EXAMPLE:
- *   #define ARGH_IMPLEMENTATION
- *   #include "argh.h"
+ * EXAMPLE
+ *   int main(int argc, char **argv) {
+ *       bool verbose = false;
+ *       int jobs = 4;
  *
- *   int main(int argc, char** argv) {
- *       argh_Parser parser;
- *       argh_init(&parser, argc, argv);
+ *       argh_parser p;
+ *       argh_init(&p, "mytool", "Does useful things");
+ *       argh_flag(&p, 'v', "verbose", &verbose, "Verbose output");
+ *       argh_int(&p, 'j', "jobs", &jobs, "Parallel jobs");
  *
- *       argh_add(&parser, "v", "verbose", ARGH_BOOL, NULL, "Enable verbose output");
- *       argh_add(&parser, "o", "output", ARGH_STRING, "out.txt", "Output file");
- *       argh_add(&parser, "n", "count", ARGH_INT, "10", "Number of iterations");
+ *       if (!argh_parse(&p, argc, argv))
+ *           return argh_exit_code(&p);  // --help, --version or an error
  *
- *       if (!argh_parse(&parser)) {
- *           argh_print_error(&parser);
- *           argh_print_help(&parser);
- *           return 1;
- *       }
- *
- *       bool verbose = argh_get_bool(&parser, "verbose");
- *       const char* output = argh_get_string(&parser, "output");
- *       int count = argh_get_int(&parser, "count");
- *
- *       // Get positional arguments
- *       for (size_t i = 0; i < parser.positional_count; i++) {
- *           printf("Positional: %s\n", parser.positional[i]);
- *       }
- *
- *       argh_free(&parser);
- *       return 0;
+ *       // use verbose and jobs
  *   }
+ *
+ * CONFIGURATION (define before including)
+ *   ARGH_BUILDER_CAP  options that argh_flag()/argh_int()/... can add (32)
+ *   ARGH_MAX_OPTS     options per parser, all tables combined (64)
+ *   ARGH_MAX_TABLES   tables per parser, the builder counts as one (8)
  *
  * LICENSE: MIT (see end of file)
  */
@@ -52,9 +39,20 @@
 #ifndef ARGH_H_INCLUDED
 #define ARGH_H_INCLUDED
 
-#include <stddef.h>
 #include <stdbool.h>
-#include <stdint.h>
+#include <stddef.h>
+
+#ifndef ARGH_BUILDER_CAP
+#define ARGH_BUILDER_CAP 32
+#endif
+
+#ifndef ARGH_MAX_OPTS
+#define ARGH_MAX_OPTS 64
+#endif
+
+#ifndef ARGH_MAX_TABLES
+#define ARGH_MAX_TABLES 8
+#endif
 
 #ifdef __cplusplus
 extern "C"
@@ -62,136 +60,239 @@ extern "C"
 #endif
 
     /* ============================================================================
-     * Configuration
-     * ============================================================================ */
-
-#ifndef ARGH_MAX_OPTIONS
-#define ARGH_MAX_OPTIONS 64
-#endif
-
-#ifndef ARGH_MAX_POSITIONAL
-#define ARGH_MAX_POSITIONAL 128
-#endif
-
-#ifndef ARGH_MAX_ERRORS
-#define ARGH_MAX_ERRORS 8
-#endif
-
-    /* ============================================================================
      * Types
      * ============================================================================ */
 
-    typedef enum
+    /* What an option entry is. Stored in argh_opt.kind. */
+    enum argh_kind
     {
-        ARGH_BOOL,   /* --flag (no value needed) */
-        ARGH_STRING, /* --name value */
-        ARGH_INT,    /* --name 42 */
-        ARGH_FLOAT,  /* --name 3.14 */
-        ARGH_DOUBLE  /* --name 3.14159 */
-    } argh_Type;
+        ARGH_K_END = 0, /* table terminator */
+        ARGH_K_FLAG,    /* bool:          -v, --verbose, --no-verbose */
+        ARGH_K_COUNT,   /* int:           -vvv */
+        ARGH_K_INT,     /* int:           -j 4, --jobs=4 */
+        ARGH_K_LONG,    /* long:          same as int */
+        ARGH_K_DOUBLE,  /* double:        --ratio 0.5 */
+        ARGH_K_STRING,  /* const char *:  -o file */
+        ARGH_K_ENUM,    /* int (index):   --mode fast */
+        ARGH_K_LIST,    /* argh_values:   -I a -I b */
+        ARGH_K_POS,     /* const char *:  positional argument */
+        ARGH_K_REST,    /* argh_values:   all remaining positionals */
+        ARGH_K_GROUP    /* help section heading */
+    };
 
-    typedef enum
+    /* Per-option flags. Stored in argh_opt.flags, combine with |. */
+    enum argh_opt_flag
     {
-        ARGH_ERR_NONE = 0,
-        ARGH_ERR_UNKNOWN_OPTION,
-        ARGH_ERR_MISSING_VALUE,
-        ARGH_ERR_INVALID_VALUE,
-        ARGH_ERR_DUPLICATE_OPTION,
-        ARGH_ERR_REQUIRED_MISSING,
-        ARGH_ERR_TOO_MANY_POSITIONAL,
-        ARGH_ERR_INTERNAL
-    } argh_ErrorCode;
+        ARGH_REQUIRED = 1 << 0,  /* must be given */
+        ARGH_OPTIONAL = 1 << 1,  /* positional may be omitted */
+        ARGH_HIDDEN = 1 << 2,    /* not shown in help */
+        ARGH_NEGATABLE = 1 << 3, /* flag also accepts --no-<name> */
+        ARGH_ONCE = 1 << 4       /* giving it twice is an error */
+    };
 
-    typedef struct
+    /* Parser-wide flags for argh_set_flags(). */
+    enum argh_parser_flag
     {
-        argh_ErrorCode code;
-        const char *option;
-        const char *message;
-    } argh_Error;
+        ARGH_POSIX = 1 << 0,       /* stop parsing options at the first positional */
+        ARGH_NO_AUTO_HELP = 1 << 1 /* no built-in -h/--help and -V/--version */
+    };
 
-    typedef struct
+    typedef enum argh_err
     {
-        const char *short_name; /* e.g., "v" for -v */
-        const char *long_name;  /* e.g., "verbose" for --verbose */
-        argh_Type type;
-        const char *default_value;
-        const char *description;
-        bool required;
-        bool present;
-        const char *value; /* parsed value */
-    } argh_Option;
+        ARGH_E_NONE = 0,
+        ARGH_E_UNKNOWN_OPTION,      /* --verbos */
+        ARGH_E_MISSING_VALUE,       /* --jobs at the end of the line */
+        ARGH_E_INVALID_VALUE,       /* --jobs abc, --mode slow */
+        ARGH_E_OUT_OF_RANGE,        /* --jobs 99999999999 */
+        ARGH_E_UNEXPECTED_VALUE,    /* --count=3 on a counter */
+        ARGH_E_SHORT_EQUALS,        /* -o=file (use -o file) */
+        ARGH_E_UNEXPECTED_ARGUMENT, /* a positional nobody asked for */
+        ARGH_E_MISSING_REQUIRED,    /* required option or positional absent */
+        ARGH_E_REPEATED,            /* ARGH_ONCE option given twice */
+        ARGH_E_TOO_MANY_VALUES,     /* list buffer full */
+        ARGH_E_CONFIG               /* mistake in the option definitions */
+    } argh_err;
 
-    typedef struct
+    /* One option, positional or help heading. Build it with the ARGH_* macros
+     * or the argh_* builder functions rather than by hand. */
+    typedef struct argh_opt
     {
-        const char *program;
-        int argc;
-        char **argv;
+        char short_name;       /* 'v' for -v, 0 for none */
+        const char *long_name; /* "verbose" for --verbose, positional name */
+        unsigned char kind;    /* enum argh_kind */
+        unsigned char flags;   /* enum argh_opt_flag */
+        void *target;          /* variable the value is written to */
+        const void *extra;     /* ARGH_K_ENUM: NULL-terminated choices */
+        const char *help;      /* help text, group title for ARGH_K_GROUP */
+        const char *metavar;   /* value name in help, NULL for a default */
+    } argh_opt;
 
-        argh_Option options[ARGH_MAX_OPTIONS];
-        size_t option_count;
+    /* A list of strings: repeated options (ARGH_K_LIST) or the remaining
+     * positionals (ARGH_K_REST). Strings point into argv. */
+    typedef struct argh_values
+    {
+        const char **items;
+        int count;
+        int capacity; /* ARGH_K_LIST only: size of items */
+    } argh_values;
 
-        const char *positional[ARGH_MAX_POSITIONAL];
-        size_t positional_count;
+    /* Initializer for a list backed by a fixed array:
+     *     const char *buf[8];
+     *     argh_values includes = ARGH_VALUES(buf); */
+#define ARGH_VALUES(array) {(array), 0, (int)(sizeof(array) / sizeof((array)[0]))}
 
-        argh_Error errors[ARGH_MAX_ERRORS];
-        size_t error_count;
+    typedef struct argh_error
+    {
+        argh_err code;
+        int argv_index;      /* argv position of the problem, -1 if none */
+        const argh_opt *opt; /* option involved, if any */
+        const char *value;   /* offending text, if any */
+        char short_name;     /* offending short option, if any */
+        const char *detail;  /* extra context for ARGH_E_CONFIG */
+    } argh_error;
 
-        bool parsed;
-        bool help_requested;
+    /* Output sink for help, version and error messages. */
+    typedef void (*argh_write_fn)(void *ctx, int to_stderr, const char *text, size_t len);
 
-        /* Internal state */
-        char **_values; /* allocated values */
-        size_t _values_count;
-        size_t _values_capacity;
-    } argh_Parser;
+    /* Lives on the stack. Fields are internal: use the functions below. */
+    typedef struct argh_parser
+    {
+        const char *argh__name;
+        const char *argh__about;
+        const char *argh__version;
+        unsigned argh__flags;
+        int argh__status;
+        const char *argh__config_problem;
+
+        const argh_opt *argh__tables[ARGH_MAX_TABLES];
+        int argh__table_count;
+
+        argh_opt argh__builder[ARGH_BUILDER_CAP + 1];
+        int argh__builder_count;
+
+        unsigned char argh__seen[(ARGH_MAX_OPTS + 7) / 8];
+
+        argh_write_fn argh__write;
+        void *argh__write_ctx;
+
+        argh_error argh__error;
+    } argh_parser;
 
     /* ============================================================================
-     * API
+     * Setup
      * ============================================================================ */
 
-    /* Initialize parser */
-    void argh_init(argh_Parser *parser, int argc, char **argv);
+    /* name: program name for help and errors, NULL to take it from argv[0].
+     * about: one-line description for help, can be NULL. */
+    void argh_init(argh_parser *p, const char *name, const char *about);
 
-    /* Free allocated resources */
-    void argh_free(argh_Parser *parser);
+    /* Enables -V/--version, printing "<name> <version>". */
+    void argh_version(argh_parser *p, const char *version);
 
-    /* Add an option definition
-     * short_name: can be NULL for long-only options
-     * long_name: required
-     * type: option type
-     * default_value: can be NULL
-     * description: for help text
-     */
-    void argh_add(argh_Parser *parser,
-                  const char *short_name,
-                  const char *long_name,
-                  argh_Type type,
-                  const char *default_value,
-                  const char *description);
+    /* ARGH_POSIX, ARGH_NO_AUTO_HELP */
+    void argh_set_flags(argh_parser *p, unsigned flags);
 
-    /* Mark an option as required */
-    void argh_require(argh_Parser *parser, const char *long_name);
+    /* Redirects all output. The default writes to stdout and stderr. */
+    void argh_set_writer(argh_parser *p, argh_write_fn write, void *ctx);
 
-    /* Parse command line arguments. Returns true on success */
-    bool argh_parse(argh_Parser *parser);
+    /* Adds an option table ending with ARGH_END. Tables and builder calls can
+     * be mixed; options appear in help in the order they were added. */
+    void argh_table(argh_parser *p, const argh_opt *table);
 
-    /* Get typed values */
-    bool argh_get_bool(argh_Parser *parser, const char *name);
-    int argh_get_int(argh_Parser *parser, const char *name);
-    float argh_get_float(argh_Parser *parser, const char *name);
-    double argh_get_double(argh_Parser *parser, const char *name);
-    const char *argh_get_string(argh_Parser *parser, const char *name);
+    /* ============================================================================
+     * Builder: add options one call at a time
+     *
+     * Each call returns the new option, or NULL if ARGH_BUILDER_CAP is exceeded
+     * (argh_parse then fails with ARGH_E_CONFIG). Modifiers accept NULL.
+     * ============================================================================ */
 
-    /* Check if option was provided */
-    bool argh_has(argh_Parser *parser, const char *name);
+    argh_opt *argh_flag(argh_parser *p, char short_name, const char *long_name, bool *target, const char *help);
+    argh_opt *argh_count(argh_parser *p, char short_name, const char *long_name, int *target, const char *help);
+    argh_opt *argh_int(argh_parser *p, char short_name, const char *long_name, int *target, const char *help);
+    argh_opt *argh_long(argh_parser *p, char short_name, const char *long_name, long *target, const char *help);
+    argh_opt *argh_double(argh_parser *p, char short_name, const char *long_name, double *target, const char *help);
+    argh_opt *argh_string(argh_parser *p, char short_name, const char *long_name, const char **target, const char *help);
+    argh_opt *argh_enum(argh_parser *p, char short_name, const char *long_name, int *target,
+                        const char *const *choices, const char *help);
+    argh_opt *argh_list(argh_parser *p, char short_name, const char *long_name, argh_values *target, const char *help);
+    argh_opt *argh_pos(argh_parser *p, const char *name, const char **target, const char *help);
+    argh_opt *argh_rest(argh_parser *p, const char *name, argh_values *target, const char *help);
+    argh_opt *argh_group(argh_parser *p, const char *title);
 
-    /* Error handling */
-    bool argh_has_errors(argh_Parser *parser);
-    void argh_print_error(argh_Parser *parser);
-    const char *argh_error_string(argh_ErrorCode code);
+    argh_opt *argh_required(argh_opt *opt);
+    argh_opt *argh_optional(argh_opt *opt);
+    argh_opt *argh_hidden(argh_opt *opt);
+    argh_opt *argh_negatable(argh_opt *opt);
+    argh_opt *argh_once(argh_opt *opt);
+    argh_opt *argh_metavar(argh_opt *opt, const char *metavar);
 
-    /* Help generation */
-    void argh_print_help(argh_Parser *parser);
+    /* ============================================================================
+     * Parsing and results
+     * ============================================================================ */
+
+    /* Returns true when the program should continue. Returns false after
+     * printing help, the version, or an error; then return argh_exit_code().
+     * argv is reordered in place: positionals end up first, in order. */
+    bool argh_parse(argh_parser *p, int argc, char **argv);
+
+    /* 0 after --help/--version or success, 2 after a usage error. */
+    int argh_exit_code(const argh_parser *p);
+
+    /* True if the option bound to target appeared on the command line. */
+    bool argh_given(const argh_parser *p, const void *target);
+
+    /* The error from the last argh_parse(), code ARGH_E_NONE if none. */
+    const argh_error *argh_last_error(const argh_parser *p);
+
+    /* Formats the last error as one line without a trailing newline.
+     * Returns the full length, like snprintf; output is truncated to fit. */
+    size_t argh_format_error(const argh_parser *p, char *buf, size_t size);
+
+    void argh_print_help(const argh_parser *p);
+
+    /* ============================================================================
+     * Table macros
+     *
+     *   static const argh_opt opts[] = {
+     *       ARGH_FLAG('v', "verbose", &verbose, "Verbose output"),
+     *       ARGH_STRING('o', "output", &out, "Output file", ARGH_REQUIRED),
+     *       ARGH_END
+     *   };
+     *
+     * The last argument (flags) is optional. The compiler warns if the
+     * variable has the wrong type for the option.
+     * ============================================================================ */
+
+/* The traditional MSVC preprocessor passes __VA_ARGS__ on as one token.
+ * An extra expansion pass splits it into separate arguments. */
+#define ARGH__EXPAND(x) x
+#define ARGH__FIRST(...) ARGH__EXPAND(ARGH__FIRST_(__VA_ARGS__, ~))
+#define ARGH__FIRST_(a, ...) a
+#define ARGH__SECOND(...) ARGH__EXPAND(ARGH__SECOND_(__VA_ARGS__, 0, ~))
+#define ARGH__SECOND_(a, b, ...) b
+
+/* Constant-expression type check: both ?: branches must be compatible */
+#define ARGH__TARGET(type, ptr) ((void *)(1 ? (ptr) : (type *)0))
+
+#define ARGH__OPT(s, l, kind, type, target, extra, ...)                                    \
+    {                                                                                      \
+        (char)(s), (l), (unsigned char)(kind), (unsigned char)(ARGH__SECOND(__VA_ARGS__)), \
+            ARGH__TARGET(type, target), (const void *)(extra), ARGH__FIRST(__VA_ARGS__), NULL \
+    }
+
+#define ARGH_FLAG(s, l, target, ...) ARGH__OPT(s, l, ARGH_K_FLAG, bool, target, NULL, __VA_ARGS__)
+#define ARGH_COUNT(s, l, target, ...) ARGH__OPT(s, l, ARGH_K_COUNT, int, target, NULL, __VA_ARGS__)
+#define ARGH_INT(s, l, target, ...) ARGH__OPT(s, l, ARGH_K_INT, int, target, NULL, __VA_ARGS__)
+#define ARGH_LONG(s, l, target, ...) ARGH__OPT(s, l, ARGH_K_LONG, long, target, NULL, __VA_ARGS__)
+#define ARGH_DOUBLE(s, l, target, ...) ARGH__OPT(s, l, ARGH_K_DOUBLE, double, target, NULL, __VA_ARGS__)
+#define ARGH_STRING(s, l, target, ...) ARGH__OPT(s, l, ARGH_K_STRING, const char *, target, NULL, __VA_ARGS__)
+#define ARGH_ENUM(s, l, target, choices, ...) \
+    ARGH__OPT(s, l, ARGH_K_ENUM, int, target, choices, __VA_ARGS__)
+#define ARGH_LIST(s, l, target, ...) ARGH__OPT(s, l, ARGH_K_LIST, argh_values, target, NULL, __VA_ARGS__)
+#define ARGH_POS(name, target, ...) ARGH__OPT(0, name, ARGH_K_POS, const char *, target, NULL, __VA_ARGS__)
+#define ARGH_REST(name, target, ...) ARGH__OPT(0, name, ARGH_K_REST, argh_values, target, NULL, __VA_ARGS__)
+#define ARGH_GROUP(title) {0, NULL, (unsigned char)ARGH_K_GROUP, 0, NULL, NULL, (title), NULL}
+#define ARGH_END {0, NULL, (unsigned char)ARGH_K_END, 0, NULL, NULL, NULL, NULL}
 
 #ifdef __cplusplus
 }
@@ -204,756 +305,1292 @@ extern "C"
  * ============================================================================ */
 
 #ifdef ARGH_IMPLEMENTATION
+#ifndef ARGH_IMPLEMENTATION_DONE
+#define ARGH_IMPLEMENTATION_DONE
 
+#include <ctype.h>
+#include <errno.h>
+#include <limits.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <ctype.h>
-#include <errno.h>
-#include <float.h>
-#include <limits.h>
 
-/* ============================================================================
- * Internal utilities
- * ============================================================================ */
-
-static int argh__strcmp(const char *a, const char *b)
+#ifdef __cplusplus
+extern "C"
 {
-    if (!a && !b)
-        return 0;
-    if (!a)
-        return -1;
-    if (!b)
-        return 1;
-    return strcmp(a, b);
-}
+#endif
 
-static char *argh__strdup(const char *s)
-{
-    if (!s)
-        return NULL;
-    size_t len = strlen(s) + 1;
-    char *dup = (char *)malloc(len);
-    if (dup)
-        memcpy(dup, s, len);
-    return dup;
-}
-
-/* ASCII case-insensitive comparison; strcasecmp is POSIX, not C99 */
-static bool argh__strieq(const char *a, const char *b)
-{
-    while (*a && *b)
+    enum
     {
-        if (tolower((unsigned char)*a) != tolower((unsigned char)*b))
-            return false;
-        a++;
-        b++;
+        ARGH__S_READY = 0,
+        ARGH__S_OK,
+        ARGH__S_HELP,
+        ARGH__S_VERSION,
+        ARGH__S_ERROR
+    };
+
+/* Widest left column in help before descriptions move to the next line */
+#define ARGH__HELP_COLUMN_MAX 30
+
+/* Iterates all entries of all tables with a global index. The _T form takes
+ * the table counter name so that loops can be nested. */
+#define ARGH__EACH_T(p, t, o, idx)                                                 \
+    for (int t = 0, idx = 0; t < (p)->argh__table_count; t++)                      \
+        for (const argh_opt *o = (p)->argh__tables[t]; o->kind != ARGH_K_END; o++, idx++)
+#define ARGH__EACH(p, o, idx) ARGH__EACH_T(p, argh__t, o, idx)
+
+    /* ------------------------------------------------------------------------
+     * Output helpers
+     * ------------------------------------------------------------------------ */
+
+    static void argh__stdio_write(void *ctx, int to_stderr, const char *text, size_t len)
+    {
+        (void)ctx;
+        fwrite(text, 1, len, to_stderr ? stderr : stdout);
     }
-    return *a == *b;
-}
 
-static bool argh__is_short_option(const char *arg)
-{
-    return arg && arg[0] == '-' && arg[1] && arg[1] != '-' && !isdigit((unsigned char)arg[1]);
-}
-
-static bool argh__is_long(const char *arg)
-{
-    return arg && arg[0] == '-' && arg[1] == '-' && arg[2];
-}
-
-static bool argh__is_option(const char *arg)
-{
-    return argh__is_short_option(arg) || argh__is_long(arg);
-}
-
-/* True if arg can be consumed as the value of the preceding option */
-static bool argh__is_value(const char *arg)
-{
-    return arg && !argh__is_option(arg) && strcmp(arg, "--") != 0;
-}
-
-static argh_Option *argh__find_option(argh_Parser *parser, const char *name)
-{
-    for (size_t i = 0; i < parser->option_count; i++)
+    static void argh__outn(const argh_parser *p, int err, const char *s, size_t n)
     {
-        argh_Option *opt = &parser->options[i];
-        if (argh__strcmp(opt->short_name, name) == 0 ||
-            argh__strcmp(opt->long_name, name) == 0)
+        if (s && n)
+            p->argh__write(p->argh__write_ctx, err, s, n);
+    }
+
+    static void argh__out(const argh_parser *p, int err, const char *s)
+    {
+        if (s)
+            argh__outn(p, err, s, strlen(s));
+    }
+
+    static void argh__spaces(const argh_parser *p, int n)
+    {
+        static const char spaces[] = "                                ";
+        while (n > 0)
         {
-            return opt;
+            int k = n < 32 ? n : 32;
+            argh__outn(p, 0, spaces, (size_t)k);
+            n -= k;
         }
     }
-    return NULL;
-}
 
-static void argh__add_error(argh_Parser *parser, argh_ErrorCode code,
-                            const char *option, const char *message)
-{
-    if (parser->error_count >= ARGH_MAX_ERRORS)
-        return;
-
-    argh_Error *err = &parser->errors[parser->error_count++];
-    err->code = code;
-    err->option = option;
-    err->message = message;
-}
-
-static bool argh__add_value(argh_Parser *parser, const char *value)
-{
-    if (parser->_values_count >= parser->_values_capacity)
+    /* Bounded string builder: tracks the full length like snprintf */
+    typedef struct
     {
-        size_t new_cap = parser->_values_capacity ? parser->_values_capacity * 2 : 16;
-        char **new_vals = (char **)realloc(parser->_values, new_cap * sizeof(char *));
-        if (!new_vals)
-            return false;
-        parser->_values = new_vals;
-        parser->_values_capacity = new_cap;
-    }
+        char *buf;
+        size_t size;
+        size_t len;
+    } argh__sb;
 
-    char *dup = argh__strdup(value);
-    if (!dup)
-        return false;
-
-    parser->_values[parser->_values_count++] = dup;
-    return true;
-}
-
-static bool argh__parse_bool(const char *str, bool *out)
-{
-    if (!str)
+    static void argh__sb_putn(argh__sb *b, const char *s, size_t n)
     {
-        *out = true;
-        return true;
-    }
-
-    const char *s = str;
-    while (isspace((unsigned char)*s))
-        s++;
-
-    if (argh__strieq(s, "true") || argh__strieq(s, "1") ||
-        argh__strieq(s, "yes") || argh__strieq(s, "on"))
-    {
-        *out = true;
-        return true;
-    }
-    if (argh__strieq(s, "false") || argh__strieq(s, "0") ||
-        argh__strieq(s, "no") || argh__strieq(s, "off"))
-    {
-        *out = false;
-        return true;
-    }
-    return false;
-}
-
-static bool argh__parse_int(const char *str, int *out)
-{
-    if (!str)
-        return false;
-
-    char *endptr;
-    errno = 0;
-    long val = strtol(str, &endptr, 10);
-
-    if (errno == ERANGE || val < INT_MIN || val > INT_MAX)
-        return false;
-    while (isspace((unsigned char)*endptr))
-        endptr++;
-    if (*endptr != '\0')
-        return false;
-
-    *out = (int)val;
-    return true;
-}
-
-static bool argh__parse_float(const char *str, float *out)
-{
-    if (!str)
-        return false;
-
-    char *endptr;
-    errno = 0;
-    double val = strtod(str, &endptr);
-
-    if (errno == ERANGE || val < -FLT_MAX || val > FLT_MAX)
-        return false;
-    while (isspace((unsigned char)*endptr))
-        endptr++;
-    if (*endptr != '\0')
-        return false;
-
-    *out = (float)val;
-    return true;
-}
-
-static bool argh__parse_double(const char *str, double *out)
-{
-    if (!str)
-        return false;
-
-    char *endptr;
-    errno = 0;
-    double val = strtod(str, &endptr);
-
-    if (errno == ERANGE)
-        return false;
-    while (isspace((unsigned char)*endptr))
-        endptr++;
-    if (*endptr != '\0')
-        return false;
-
-    *out = val;
-    return true;
-}
-
-/* ============================================================================
- * Public API implementation
- * ============================================================================ */
-
-void argh_init(argh_Parser *parser, int argc, char **argv)
-{
-    if (!parser)
-        return;
-
-    memset(parser, 0, sizeof(argh_Parser));
-    parser->argc = argc;
-    parser->argv = argv;
-    parser->program = (argc > 0 && argv[0]) ? argv[0] : "program";
-
-    /* Extract just the program name from path */
-    const char *p = parser->program;
-    const char *last_sep = NULL;
-    for (const char *c = p; *c; c++)
-    {
-        if (*c == '/' || *c == '\\')
-            last_sep = c;
-    }
-    if (last_sep)
-        parser->program = last_sep + 1;
-}
-
-void argh_free(argh_Parser *parser)
-{
-    if (!parser)
-        return;
-
-    for (size_t i = 0; i < parser->_values_count; i++)
-    {
-        free(parser->_values[i]);
-    }
-    free(parser->_values);
-    parser->_values = NULL;
-    parser->_values_count = 0;
-    parser->_values_capacity = 0;
-}
-
-void argh_add(argh_Parser *parser,
-              const char *short_name,
-              const char *long_name,
-              argh_Type type,
-              const char *default_value,
-              const char *description)
-{
-    if (!parser || (!short_name && !long_name))
-        return;
-    if (parser->option_count >= ARGH_MAX_OPTIONS)
-        return;
-
-    argh_Option *opt = &parser->options[parser->option_count++];
-    opt->short_name = short_name;
-    opt->long_name = long_name;
-    opt->type = type;
-    opt->default_value = default_value;
-    opt->description = description;
-    opt->required = false;
-    opt->present = false;
-    opt->value = default_value;
-}
-
-void argh_require(argh_Parser *parser, const char *long_name)
-{
-    argh_Option *opt = argh__find_option(parser, long_name);
-    if (opt)
-        opt->required = true;
-}
-
-bool argh_parse(argh_Parser *parser)
-{
-    if (!parser || parser->parsed)
-        return false;
-    parser->parsed = true;
-
-    for (int i = 1; i < parser->argc; i++)
-    {
-        const char *arg = parser->argv[i];
-
-        /* Check for -- (end of options) */
-        if (arg && strcmp(arg, "--") == 0)
+        size_t i;
+        for (i = 0; i < n && s[i]; i++)
         {
-            /* Rest are positional */
-            for (int j = i + 1; j < parser->argc; j++)
+            if (b->len + 1 < b->size)
+                b->buf[b->len] = s[i];
+            b->len++;
+        }
+        if (b->size)
+            b->buf[b->len < b->size ? b->len : b->size - 1] = '\0';
+    }
+
+    static void argh__sb_put(argh__sb *b, const char *s)
+    {
+        if (s)
+            argh__sb_putn(b, s, strlen(s));
+    }
+
+    static void argh__sb_char(argh__sb *b, char c)
+    {
+        argh__sb_putn(b, &c, 1);
+    }
+
+    /* ------------------------------------------------------------------------
+     * Option lookup
+     * ------------------------------------------------------------------------ */
+
+    static bool argh__is_option_kind(int kind)
+    {
+        return kind != ARGH_K_POS && kind != ARGH_K_REST && kind != ARGH_K_GROUP;
+    }
+
+    static bool argh__takes_value(const argh_opt *o)
+    {
+        switch (o->kind)
+        {
+        case ARGH_K_INT:
+        case ARGH_K_LONG:
+        case ARGH_K_DOUBLE:
+        case ARGH_K_STRING:
+        case ARGH_K_ENUM:
+        case ARGH_K_LIST:
+            return true;
+        default:
+            return false;
+        }
+    }
+
+    static const argh_opt *argh__find_long(const argh_parser *p, const char *name, size_t len, int *index)
+    {
+        ARGH__EACH(p, o, i)
+        {
+            /* The first-character check skips most strncmp calls */
+            if (argh__is_option_kind(o->kind) && o->long_name && o->long_name[0] == name[0] &&
+                strncmp(o->long_name, name, len) == 0 && o->long_name[len] == '\0')
             {
-                if (parser->positional_count >= ARGH_MAX_POSITIONAL)
+                *index = i;
+                return o;
+            }
+        }
+        return NULL;
+    }
+
+    static const argh_opt *argh__find_short(const argh_parser *p, char c, int *index)
+    {
+        ARGH__EACH(p, o, i)
+        {
+            if (argh__is_option_kind(o->kind) && o->short_name == c)
+            {
+                *index = i;
+                return o;
+            }
+        }
+        return NULL;
+    }
+
+    static bool argh__seen(const argh_parser *p, int index)
+    {
+        return (p->argh__seen[index >> 3] >> (index & 7)) & 1u;
+    }
+
+    static void argh__mark(argh_parser *p, int index)
+    {
+        p->argh__seen[index >> 3] = (unsigned char)(p->argh__seen[index >> 3] | (1u << (index & 7)));
+    }
+
+    /* ------------------------------------------------------------------------
+     * Value conversion: strict, whole string, no surrounding spaces
+     * ------------------------------------------------------------------------ */
+
+    /* Decimal or 0x hex with an optional sign. Octal is never used. */
+    static bool argh__int_syntax(const char *s, int *base)
+    {
+        if (*s == '+' || *s == '-')
+            s++;
+        if (s[0] == '0' && (s[1] == 'x' || s[1] == 'X'))
+        {
+            s += 2;
+            *base = 16;
+            if (!*s)
+                return false;
+            for (; *s; s++)
+                if (!isxdigit((unsigned char)*s))
+                    return false;
+            return true;
+        }
+        *base = 10;
+        if (!*s)
+            return false;
+        for (; *s; s++)
+            if (!isdigit((unsigned char)*s))
+                return false;
+        return true;
+    }
+
+    static argh_err argh__parse_long(const char *s, long lo, long hi, long *out)
+    {
+        int base;
+        char *end;
+        long v;
+        if (!argh__int_syntax(s, &base))
+            return ARGH_E_INVALID_VALUE;
+        errno = 0;
+        v = strtol(s, &end, base);
+        if (errno == ERANGE || v < lo || v > hi)
+            return ARGH_E_OUT_OF_RANGE;
+        *out = v;
+        return ARGH_E_NONE;
+    }
+
+    static argh_err argh__parse_double(const char *s, double *out)
+    {
+        char *end;
+        double v;
+        /* Rejects leading spaces, "inf" and "nan", which strtod accepts */
+        if (!(*s == '+' || *s == '-' || *s == '.' || isdigit((unsigned char)*s)))
+            return ARGH_E_INVALID_VALUE;
+        v = strtod(s, &end);
+        if (end == s || *end != '\0')
+            return ARGH_E_INVALID_VALUE;
+        if (!isfinite(v))
+            return ARGH_E_OUT_OF_RANGE;
+        *out = v;
+        return ARGH_E_NONE;
+    }
+
+    static bool argh__ieq(const char *a, const char *b)
+    {
+        for (; *a && *b; a++, b++)
+            if (tolower((unsigned char)*a) != tolower((unsigned char)*b))
+                return false;
+        return *a == *b;
+    }
+
+    static argh_err argh__parse_bool(const char *s, bool *out)
+    {
+        if (argh__ieq(s, "true") || argh__ieq(s, "yes") || argh__ieq(s, "on") || strcmp(s, "1") == 0)
+            *out = true;
+        else if (argh__ieq(s, "false") || argh__ieq(s, "no") || argh__ieq(s, "off") || strcmp(s, "0") == 0)
+            *out = false;
+        else
+            return ARGH_E_INVALID_VALUE;
+        return ARGH_E_NONE;
+    }
+
+    /* Converts and stores one value. v is NULL for flags and counters. */
+    static argh_err argh__store(const argh_opt *o, const char *v, bool negated)
+    {
+        long l;
+        double d;
+        bool b;
+        argh_err e;
+
+        switch (o->kind)
+        {
+        case ARGH_K_FLAG:
+            if (!v)
+            {
+                *(bool *)o->target = !negated;
+                return ARGH_E_NONE;
+            }
+            if ((e = argh__parse_bool(v, &b)) != ARGH_E_NONE)
+                return e;
+            *(bool *)o->target = b;
+            return ARGH_E_NONE;
+        case ARGH_K_COUNT:
+            if (*(int *)o->target < INT_MAX)
+                (*(int *)o->target)++;
+            return ARGH_E_NONE;
+        case ARGH_K_INT:
+            if ((e = argh__parse_long(v, INT_MIN, INT_MAX, &l)) != ARGH_E_NONE)
+                return e;
+            *(int *)o->target = (int)l;
+            return ARGH_E_NONE;
+        case ARGH_K_LONG:
+            if ((e = argh__parse_long(v, LONG_MIN, LONG_MAX, &l)) != ARGH_E_NONE)
+                return e;
+            *(long *)o->target = l;
+            return ARGH_E_NONE;
+        case ARGH_K_DOUBLE:
+            if ((e = argh__parse_double(v, &d)) != ARGH_E_NONE)
+                return e;
+            *(double *)o->target = d;
+            return ARGH_E_NONE;
+        case ARGH_K_STRING:
+            *(const char **)o->target = v;
+            return ARGH_E_NONE;
+        case ARGH_K_ENUM:
+        {
+            const char *const *choices = (const char *const *)o->extra;
+            int i;
+            for (i = 0; choices && choices[i]; i++)
+            {
+                if (strcmp(choices[i], v) == 0)
                 {
-                    argh__add_error(parser, ARGH_ERR_TOO_MANY_POSITIONAL,
-                                    NULL, "Too many positional arguments");
-                    break;
+                    *(int *)o->target = i;
+                    return ARGH_E_NONE;
                 }
-                parser->positional[parser->positional_count++] = parser->argv[j];
+            }
+            return ARGH_E_INVALID_VALUE;
+        }
+        case ARGH_K_LIST:
+        {
+            argh_values *list = (argh_values *)o->target;
+            if (list->count >= list->capacity)
+                return ARGH_E_TOO_MANY_VALUES;
+            list->items[list->count++] = v;
+            return ARGH_E_NONE;
+        }
+        default:
+            return ARGH_E_NONE;
+        }
+    }
+
+    /* ------------------------------------------------------------------------
+     * Parsing
+     * ------------------------------------------------------------------------ */
+
+    static int argh__fail(argh_parser *p, argh_err code, int index, const argh_opt *o,
+                          const char *value, char short_name)
+    {
+        argh_error *e = &p->argh__error;
+        e->code = code;
+        e->argv_index = index;
+        e->opt = o;
+        e->value = value;
+        e->short_name = short_name;
+        return ARGH__S_ERROR;
+    }
+
+    static bool argh__auto_help(const argh_parser *p)
+    {
+        return !(p->argh__flags & ARGH_NO_AUTO_HELP);
+    }
+
+    static int argh__apply(argh_parser *p, const argh_opt *o, int index, const char *v,
+                           bool negated, int argi, char short_name)
+    {
+        argh_err e;
+        if ((o->flags & ARGH_ONCE) && argh__seen(p, index))
+            return argh__fail(p, ARGH_E_REPEATED, argi, o, NULL, short_name);
+        e = argh__store(o, v, negated);
+        if (e != ARGH_E_NONE)
+            return argh__fail(p, e, argi, o, v, short_name);
+        argh__mark(p, index);
+        return ARGH__S_OK;
+    }
+
+    /* Moves argv[i] to argv[*w], shifting the options in between right.
+     * Keeps argv a permutation, with positionals in their original order. */
+    static void argh__move_positional(char **argv, int *w, int i)
+    {
+        char *arg = argv[i];
+        int k;
+        for (k = i; k > *w; k--)
+            argv[k] = argv[k - 1];
+        argv[*w] = arg;
+        (*w)++;
+    }
+
+    static bool argh__next_is_value(int i, int argc, char **argv)
+    {
+        return i + 1 < argc && argv[i + 1] && strcmp(argv[i + 1], "--") != 0;
+    }
+
+    /* One pass over argv. With apply == false nothing is written: the pass
+     * only finds out whether help or version was requested, so that help can
+     * show the defaults before any option changes them. */
+    static int argh__scan(argh_parser *p, int argc, char **argv, bool apply, int *positional_count)
+    {
+        int w = 1;
+        bool only_positionals = false;
+        int i;
+
+        for (i = 1; i < argc && argv[i]; i++)
+        {
+            char *arg = argv[i];
+            int rc = ARGH__S_OK;
+
+            if (only_positionals || arg[0] != '-' || arg[1] == '\0')
+            {
+                if (apply)
+                    argh__move_positional(argv, &w, i);
+                if (p->argh__flags & ARGH_POSIX)
+                    only_positionals = true;
+                continue;
+            }
+
+            if (arg[1] == '-' && arg[2] == '\0')
+            {
+                only_positionals = true;
+                continue;
+            }
+
+            if (arg[1] == '-')
+            {
+                /* --name, --name=value, --no-name */
+                const char *name = arg + 2;
+                const char *eq = strchr(name, '=');
+                size_t len = eq ? (size_t)(eq - name) : strlen(name);
+                const argh_opt *o;
+                const char *v = NULL;
+                bool negated = false;
+                int index = 0;
+
+                if (argh__auto_help(p))
+                {
+                    if (len == 4 && strncmp(name, "help", 4) == 0)
+                        return ARGH__S_HELP;
+                    if (p->argh__version && len == 7 && strncmp(name, "version", 7) == 0)
+                        return ARGH__S_VERSION;
+                }
+
+                o = argh__find_long(p, name, len, &index);
+                if (!o && len > 3 && strncmp(name, "no-", 3) == 0)
+                {
+                    o = argh__find_long(p, name + 3, len - 3, &index);
+                    if (o && o->kind == ARGH_K_FLAG && (o->flags & ARGH_NEGATABLE))
+                        negated = true;
+                    else
+                        o = NULL;
+                }
+                if (!o)
+                    rc = argh__fail(p, ARGH_E_UNKNOWN_OPTION, i, NULL, arg, 0);
+                else if (argh__takes_value(o))
+                {
+                    if (eq)
+                        v = eq + 1;
+                    else if (argh__next_is_value(i, argc, argv))
+                        v = argv[++i];
+                    else
+                        rc = argh__fail(p, ARGH_E_MISSING_VALUE, i, o, NULL, 0);
+                }
+                else if (eq && (o->kind != ARGH_K_FLAG || negated))
+                    rc = argh__fail(p, ARGH_E_UNEXPECTED_VALUE, i, o, eq + 1, 0);
+                else if (eq)
+                    v = eq + 1;
+
+                if (rc == ARGH__S_OK && apply)
+                    rc = argh__apply(p, o, index, v, negated, i, 0);
+            }
+            else
+            {
+                /* -v, -abc, -ofile, -o file */
+                const char *c;
+                int argi = i;
+                for (c = arg + 1; *c && rc == ARGH__S_OK; c++)
+                {
+                    const argh_opt *o;
+                    int index = 0;
+
+                    if (*c == '=')
+                    {
+                        rc = argh__fail(p, ARGH_E_SHORT_EQUALS, argi, NULL, arg, c[-1]);
+                        break;
+                    }
+                    if (argh__auto_help(p))
+                    {
+                        if (*c == 'h')
+                            return ARGH__S_HELP;
+                        if (*c == 'V' && p->argh__version)
+                            return ARGH__S_VERSION;
+                    }
+
+                    o = argh__find_short(p, *c, &index);
+                    if (!o)
+                    {
+                        rc = argh__fail(p, ARGH_E_UNKNOWN_OPTION, argi, NULL, arg, *c);
+                        break;
+                    }
+                    if (argh__takes_value(o))
+                    {
+                        const char *v = NULL;
+                        if (c[1] == '=')
+                            rc = argh__fail(p, ARGH_E_SHORT_EQUALS, argi, o, arg, *c);
+                        else if (c[1])
+                            v = c + 1;
+                        else if (argh__next_is_value(i, argc, argv))
+                            v = argv[++i];
+                        else
+                            rc = argh__fail(p, ARGH_E_MISSING_VALUE, argi, o, NULL, *c);
+                        if (rc == ARGH__S_OK && apply)
+                            rc = argh__apply(p, o, index, v, false, argi, *c);
+                        break; /* the rest of the cluster was the value */
+                    }
+                    if (apply)
+                        rc = argh__apply(p, o, index, NULL, false, argi, *c);
+                }
+            }
+
+            /* The dry pass ignores errors: it only looks for help/version */
+            if (rc != ARGH__S_OK && apply)
+                return rc;
+        }
+
+        *positional_count = w - 1;
+        return ARGH__S_OK;
+    }
+
+    /* Hands positionals to ARGH_K_POS / ARGH_K_REST, checks required ones */
+    static int argh__assign_positionals(argh_parser *p, char **argv, int count)
+    {
+        int used = 0;
+        ARGH__EACH(p, o, index)
+        {
+            if (o->kind == ARGH_K_POS)
+            {
+                if (used < count)
+                {
+                    *(const char **)o->target = argv[1 + used++];
+                    argh__mark(p, index);
+                }
+                else if (!(o->flags & ARGH_OPTIONAL))
+                {
+                    return argh__fail(p, ARGH_E_MISSING_REQUIRED, -1, o, NULL, 0);
+                }
+            }
+            else if (o->kind == ARGH_K_REST)
+            {
+                argh_values *rest = (argh_values *)o->target;
+                rest->items = (const char **)(void *)(argv + 1 + used);
+                rest->count = count - used;
+                rest->capacity = rest->count;
+                used = count;
+                if (rest->count > 0)
+                    argh__mark(p, index);
+                else if (o->flags & ARGH_REQUIRED)
+                    return argh__fail(p, ARGH_E_MISSING_REQUIRED, -1, o, NULL, 0);
+            }
+        }
+        if (used < count)
+            return argh__fail(p, ARGH_E_UNEXPECTED_ARGUMENT, 1 + used, NULL, argv[1 + used], 0);
+        return ARGH__S_OK;
+    }
+
+    static int argh__check_required(argh_parser *p)
+    {
+        ARGH__EACH(p, o, index)
+        {
+            if (argh__is_option_kind(o->kind) && (o->flags & ARGH_REQUIRED) && !argh__seen(p, index))
+                return argh__fail(p, ARGH_E_MISSING_REQUIRED, -1, o, NULL, 0);
+        }
+        return ARGH__S_OK;
+    }
+
+    static int argh__config_error(argh_parser *p, const char *detail, const argh_opt *o)
+    {
+        p->argh__error.detail = detail;
+        return argh__fail(p, ARGH_E_CONFIG, -1, o, NULL, 0);
+    }
+
+    /* Catches mistakes in the definitions before any argument is read */
+    static int argh__check_config(argh_parser *p)
+    {
+        int total = 0;
+
+        if (p->argh__config_problem)
+            return argh__config_error(p, p->argh__config_problem, NULL);
+
+        ARGH__EACH(p, o, index)
+        {
+            (void)index;
+            total++;
+            if (argh__auto_help(p) && argh__is_option_kind(o->kind))
+            {
+                bool clash = o->short_name == 'h' || (o->long_name && strcmp(o->long_name, "help") == 0);
+                if (p->argh__version)
+                    clash = clash || o->short_name == 'V' ||
+                            (o->long_name && strcmp(o->long_name, "version") == 0);
+                if (clash)
+                    return argh__config_error(p, "name reserved for help/version, see ARGH_NO_AUTO_HELP", o);
+            }
+            if (!o->target && o->kind != ARGH_K_GROUP)
+                return argh__config_error(p, "option has no target variable", o);
+            if (o->kind == ARGH_K_ENUM && !o->extra)
+                return argh__config_error(p, "enum option has no choices", o);
+        }
+        if (total > ARGH_MAX_OPTS)
+            return argh__config_error(p, "more options than ARGH_MAX_OPTS", NULL);
+
+#ifndef NDEBUG
+        /* Duplicate names: quadratic, so debug builds only */
+        ARGH__EACH_T(p, argh__ta, a, ia)
+        {
+            if (!argh__is_option_kind(a->kind))
+                continue;
+            ARGH__EACH_T(p, argh__tb, b, ib)
+            {
+                if (ib <= ia || !argh__is_option_kind(b->kind))
+                    continue;
+                if ((a->short_name && a->short_name == b->short_name) ||
+                    (a->long_name && b->long_name && a->long_name[0] == b->long_name[0] &&
+                     strcmp(a->long_name, b->long_name) == 0))
+                    return argh__config_error(p, "option defined twice", b);
+            }
+        }
+#endif
+        return ARGH__S_OK;
+    }
+
+    /* Cheap check whether a dry pass for help/version is worth running */
+    static bool argh__may_want_help(const argh_parser *p, int argc, char **argv)
+    {
+        int i;
+        if (!argh__auto_help(p))
+            return false;
+        for (i = 1; i < argc && argv[i]; i++)
+        {
+            const char *a = argv[i];
+            if (a[0] != '-')
+                continue;
+            if (a[1] == '-')
+            {
+                if (a[2] == '\0')
+                    return false;
+                if (strncmp(a + 2, "help", 4) == 0 || strncmp(a + 2, "version", 7) == 0)
+                    return true;
+            }
+            else if (strchr(a, 'h') || strchr(a, 'V'))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    static void argh__print_error(const argh_parser *p)
+    {
+        char buf[256];
+        size_t n = argh_format_error(p, buf, sizeof(buf));
+        argh__out(p, 1, p->argh__name);
+        argh__out(p, 1, ": ");
+        argh__outn(p, 1, buf, n < sizeof(buf) ? n : sizeof(buf) - 1);
+        argh__out(p, 1, "\n");
+        if (argh__auto_help(p) && p->argh__error.code != ARGH_E_CONFIG)
+        {
+            argh__out(p, 1, "Try '");
+            argh__out(p, 1, p->argh__name);
+            argh__out(p, 1, " --help' for more information.\n");
+        }
+    }
+
+    static const char *argh__basename(const char *path)
+    {
+        const char *base = path;
+        for (; *path; path++)
+            if (*path == '/' || *path == '\\')
+                base = path + 1;
+        return base;
+    }
+
+    /* ------------------------------------------------------------------------
+     * Public API: setup and builder
+     * ------------------------------------------------------------------------ */
+
+    void argh_init(argh_parser *p, const char *name, const char *about)
+    {
+        memset(p, 0, sizeof(*p));
+        p->argh__name = name;
+        p->argh__about = about;
+        p->argh__write = argh__stdio_write;
+    }
+
+    void argh_version(argh_parser *p, const char *version)
+    {
+        p->argh__version = version;
+    }
+
+    void argh_set_flags(argh_parser *p, unsigned flags)
+    {
+        p->argh__flags = flags;
+    }
+
+    void argh_set_writer(argh_parser *p, argh_write_fn write, void *ctx)
+    {
+        p->argh__write = write ? write : argh__stdio_write;
+        p->argh__write_ctx = ctx;
+    }
+
+    void argh_table(argh_parser *p, const argh_opt *table)
+    {
+        if (p->argh__table_count >= ARGH_MAX_TABLES)
+        {
+            p->argh__config_problem = "more tables than ARGH_MAX_TABLES";
+            return;
+        }
+        p->argh__tables[p->argh__table_count++] = table;
+    }
+
+    static argh_opt *argh__add(argh_parser *p, char short_name, const char *long_name, int kind,
+                               void *target, const void *extra, const char *help)
+    {
+        argh_opt *o;
+        if (p->argh__builder_count >= ARGH_BUILDER_CAP)
+        {
+            p->argh__config_problem = "more builder options than ARGH_BUILDER_CAP";
+            return NULL;
+        }
+        /* The builder joins the table list at its first use, so help order
+         * follows the order of argh_table() and builder calls */
+        if (p->argh__builder_count == 0)
+        {
+            argh_table(p, p->argh__builder);
+            if (p->argh__config_problem)
+                return NULL;
+        }
+        o = &p->argh__builder[p->argh__builder_count++];
+        o->short_name = short_name;
+        o->long_name = long_name;
+        o->kind = (unsigned char)kind;
+        o->flags = 0;
+        o->target = target;
+        o->extra = extra;
+        o->help = help;
+        o->metavar = NULL;
+        return o;
+    }
+
+    argh_opt *argh_flag(argh_parser *p, char s, const char *l, bool *target, const char *help)
+    {
+        return argh__add(p, s, l, ARGH_K_FLAG, target, NULL, help);
+    }
+
+    argh_opt *argh_count(argh_parser *p, char s, const char *l, int *target, const char *help)
+    {
+        return argh__add(p, s, l, ARGH_K_COUNT, target, NULL, help);
+    }
+
+    argh_opt *argh_int(argh_parser *p, char s, const char *l, int *target, const char *help)
+    {
+        return argh__add(p, s, l, ARGH_K_INT, target, NULL, help);
+    }
+
+    argh_opt *argh_long(argh_parser *p, char s, const char *l, long *target, const char *help)
+    {
+        return argh__add(p, s, l, ARGH_K_LONG, target, NULL, help);
+    }
+
+    argh_opt *argh_double(argh_parser *p, char s, const char *l, double *target, const char *help)
+    {
+        return argh__add(p, s, l, ARGH_K_DOUBLE, target, NULL, help);
+    }
+
+    argh_opt *argh_string(argh_parser *p, char s, const char *l, const char **target, const char *help)
+    {
+        return argh__add(p, s, l, ARGH_K_STRING, (void *)target, NULL, help);
+    }
+
+    argh_opt *argh_enum(argh_parser *p, char s, const char *l, int *target,
+                        const char *const *choices, const char *help)
+    {
+        return argh__add(p, s, l, ARGH_K_ENUM, target, choices, help);
+    }
+
+    argh_opt *argh_list(argh_parser *p, char s, const char *l, argh_values *target, const char *help)
+    {
+        return argh__add(p, s, l, ARGH_K_LIST, target, NULL, help);
+    }
+
+    argh_opt *argh_pos(argh_parser *p, const char *name, const char **target, const char *help)
+    {
+        return argh__add(p, 0, name, ARGH_K_POS, (void *)target, NULL, help);
+    }
+
+    argh_opt *argh_rest(argh_parser *p, const char *name, argh_values *target, const char *help)
+    {
+        return argh__add(p, 0, name, ARGH_K_REST, target, NULL, help);
+    }
+
+    argh_opt *argh_group(argh_parser *p, const char *title)
+    {
+        return argh__add(p, 0, NULL, ARGH_K_GROUP, NULL, NULL, title);
+    }
+
+    static argh_opt *argh__set_flag(argh_opt *opt, int flag)
+    {
+        if (opt)
+            opt->flags = (unsigned char)(opt->flags | flag);
+        return opt;
+    }
+
+    argh_opt *argh_required(argh_opt *opt) { return argh__set_flag(opt, ARGH_REQUIRED); }
+    argh_opt *argh_optional(argh_opt *opt) { return argh__set_flag(opt, ARGH_OPTIONAL); }
+    argh_opt *argh_hidden(argh_opt *opt) { return argh__set_flag(opt, ARGH_HIDDEN); }
+    argh_opt *argh_negatable(argh_opt *opt) { return argh__set_flag(opt, ARGH_NEGATABLE); }
+    argh_opt *argh_once(argh_opt *opt) { return argh__set_flag(opt, ARGH_ONCE); }
+
+    argh_opt *argh_metavar(argh_opt *opt, const char *metavar)
+    {
+        if (opt)
+            opt->metavar = metavar;
+        return opt;
+    }
+
+    /* ------------------------------------------------------------------------
+     * Public API: parsing and results
+     * ------------------------------------------------------------------------ */
+
+    bool argh_parse(argh_parser *p, int argc, char **argv)
+    {
+        int positional_count = 0;
+        int st;
+
+        memset(p->argh__seen, 0, sizeof(p->argh__seen));
+        memset(&p->argh__error, 0, sizeof(p->argh__error));
+        p->argh__error.argv_index = -1;
+        if (!p->argh__name)
+            p->argh__name = (argc > 0 && argv[0]) ? argh__basename(argv[0]) : "program";
+
+        st = argh__check_config(p);
+        if (st == ARGH__S_OK && argh__may_want_help(p, argc, argv))
+        {
+            st = argh__scan(p, argc, argv, false, &positional_count);
+            /* The dry pass may record errors it then ignores */
+            memset(&p->argh__error, 0, sizeof(p->argh__error));
+            p->argh__error.argv_index = -1;
+        }
+        if (st == ARGH__S_OK)
+            st = argh__scan(p, argc, argv, true, &positional_count);
+        if (st == ARGH__S_OK)
+            st = argh__assign_positionals(p, argv, positional_count);
+        if (st == ARGH__S_OK)
+            st = argh__check_required(p);
+
+        p->argh__status = st;
+        switch (st)
+        {
+        case ARGH__S_OK:
+            return true;
+        case ARGH__S_HELP:
+            argh_print_help(p);
+            return false;
+        case ARGH__S_VERSION:
+            argh__out(p, 0, p->argh__name);
+            argh__out(p, 0, " ");
+            argh__out(p, 0, p->argh__version);
+            argh__out(p, 0, "\n");
+            return false;
+        default:
+            argh__print_error(p);
+            return false;
+        }
+    }
+
+    int argh_exit_code(const argh_parser *p)
+    {
+        return p->argh__status == ARGH__S_ERROR ? 2 : 0;
+    }
+
+    bool argh_given(const argh_parser *p, const void *target)
+    {
+        ARGH__EACH(p, o, index)
+        {
+            if (o->target == target && o->kind != ARGH_K_GROUP)
+                return argh__seen(p, index);
+        }
+        return false;
+    }
+
+    const argh_error *argh_last_error(const argh_parser *p)
+    {
+        return &p->argh__error;
+    }
+
+    /* "--name" if the option has a long name, "-x" otherwise, "<name>" for
+     * positionals. used_short: the short name the user typed, if any. */
+    static void argh__sb_opt_name(argh__sb *b, const argh_opt *o, char used_short)
+    {
+        if (o && (o->kind == ARGH_K_POS || o->kind == ARGH_K_REST))
+        {
+            argh__sb_char(b, '<');
+            argh__sb_put(b, o->long_name);
+            argh__sb_char(b, '>');
+        }
+        else if (used_short)
+        {
+            argh__sb_char(b, '-');
+            argh__sb_char(b, used_short);
+        }
+        else if (o && o->long_name)
+        {
+            argh__sb_put(b, "--");
+            argh__sb_put(b, o->long_name);
+        }
+        else if (o)
+        {
+            argh__sb_char(b, '-');
+            argh__sb_char(b, o->short_name);
+        }
+    }
+
+    static void argh__sb_expected(argh__sb *b, const argh_opt *o)
+    {
+        switch (o->kind)
+        {
+        case ARGH_K_INT:
+        case ARGH_K_LONG:
+            argh__sb_put(b, "expected an integer");
+            break;
+        case ARGH_K_DOUBLE:
+            argh__sb_put(b, "expected a number");
+            break;
+        case ARGH_K_FLAG:
+            argh__sb_put(b, "expected true or false");
+            break;
+        case ARGH_K_ENUM:
+        {
+            const char *const *choices = (const char *const *)o->extra;
+            int i;
+            argh__sb_put(b, "expected one of: ");
+            for (i = 0; choices && choices[i]; i++)
+            {
+                if (i)
+                    argh__sb_put(b, ", ");
+                argh__sb_put(b, choices[i]);
             }
             break;
         }
-
-        /* Positional argument */
-        if (!argh__is_option(arg))
-        {
-            if (parser->positional_count >= ARGH_MAX_POSITIONAL)
-            {
-                argh__add_error(parser, ARGH_ERR_TOO_MANY_POSITIONAL,
-                                NULL, "Too many positional arguments");
-                continue;
-            }
-            parser->positional[parser->positional_count++] = arg;
-            continue;
+        default:
+            argh__sb_put(b, "invalid value");
+            break;
         }
+    }
 
-        /* Parse option */
-        const char *name = NULL;
-        const char *value = NULL;
-        argh_Option *opt = NULL;
+    size_t argh_format_error(const argh_parser *p, char *buf, size_t size)
+    {
+        const argh_error *e = &p->argh__error;
+        argh__sb b;
+        b.buf = buf;
+        b.size = size;
+        b.len = 0;
+        if (size)
+            buf[0] = '\0';
 
-        if (argh__is_long(arg))
+        switch (e->code)
         {
-            /* Long option: --name or --name=value */
-            name = arg + 2;
-            const char *eq = strchr(name, '=');
-            if (eq)
+        case ARGH_E_NONE:
+            break;
+        case ARGH_E_UNKNOWN_OPTION:
+            argh__sb_put(&b, "unknown option '");
+            if (e->short_name)
             {
-                /* --name=value form */
-                if (!argh__add_value(parser, eq + 1))
-                {
-                    argh__add_error(parser, ARGH_ERR_INTERNAL, name, "Memory allocation failed");
-                    continue;
-                }
-                value = parser->_values[parser->_values_count - 1];
-                /* Temporarily null-terminate at '=' for lookup */
-                size_t name_len = eq - name;
-                char *temp_name = (char *)malloc(name_len + 1);
-                if (!temp_name)
-                {
-                    argh__add_error(parser, ARGH_ERR_INTERNAL, name, "Memory allocation failed");
-                    continue;
-                }
-                memcpy(temp_name, name, name_len);
-                temp_name[name_len] = '\0';
-                opt = argh__find_option(parser, temp_name);
-                free(temp_name);
+                argh__sb_char(&b, '-');
+                argh__sb_char(&b, e->short_name);
             }
             else
             {
-                opt = argh__find_option(parser, name);
+                const char *eq = strchr(e->value, '=');
+                argh__sb_putn(&b, e->value, eq ? (size_t)(eq - e->value) : strlen(e->value));
+            }
+            argh__sb_char(&b, '\'');
+            break;
+        case ARGH_E_MISSING_VALUE:
+            argh__sb_put(&b, "option '");
+            argh__sb_opt_name(&b, e->opt, e->short_name);
+            argh__sb_put(&b, "' requires a value");
+            break;
+        case ARGH_E_INVALID_VALUE:
+            argh__sb_put(&b, "invalid value '");
+            argh__sb_put(&b, e->value);
+            argh__sb_put(&b, "' for '");
+            argh__sb_opt_name(&b, e->opt, e->short_name);
+            argh__sb_put(&b, "': ");
+            argh__sb_expected(&b, e->opt);
+            break;
+        case ARGH_E_OUT_OF_RANGE:
+            argh__sb_put(&b, "value '");
+            argh__sb_put(&b, e->value);
+            argh__sb_put(&b, "' for '");
+            argh__sb_opt_name(&b, e->opt, e->short_name);
+            argh__sb_put(&b, "' is out of range");
+            break;
+        case ARGH_E_UNEXPECTED_VALUE:
+            argh__sb_put(&b, "option '");
+            argh__sb_opt_name(&b, e->opt, e->short_name);
+            argh__sb_put(&b, "' does not take a value");
+            break;
+        case ARGH_E_SHORT_EQUALS:
+            argh__sb_put(&b, "short option '-");
+            argh__sb_char(&b, e->short_name);
+            argh__sb_put(&b, "' does not accept '=': write '-");
+            argh__sb_char(&b, e->short_name);
+            argh__sb_put(&b, " VALUE'");
+            if (e->opt && e->opt->long_name)
+            {
+                argh__sb_put(&b, " or '--");
+                argh__sb_put(&b, e->opt->long_name);
+                argh__sb_put(&b, "=VALUE'");
+            }
+            break;
+        case ARGH_E_UNEXPECTED_ARGUMENT:
+            argh__sb_put(&b, "unexpected argument '");
+            argh__sb_put(&b, e->value);
+            argh__sb_char(&b, '\'');
+            break;
+        case ARGH_E_MISSING_REQUIRED:
+            argh__sb_put(&b, e->opt && (e->opt->kind == ARGH_K_POS || e->opt->kind == ARGH_K_REST)
+                                 ? "missing required argument '"
+                                 : "missing required option '");
+            argh__sb_opt_name(&b, e->opt, 0);
+            argh__sb_char(&b, '\'');
+            break;
+        case ARGH_E_REPEATED:
+            argh__sb_put(&b, "option '");
+            argh__sb_opt_name(&b, e->opt, e->short_name);
+            argh__sb_put(&b, "' can only be given once");
+            break;
+        case ARGH_E_TOO_MANY_VALUES:
+        {
+            char num[24];
+            snprintf(num, sizeof(num), "%d", ((const argh_values *)e->opt->target)->capacity);
+            argh__sb_put(&b, "too many values for '");
+            argh__sb_opt_name(&b, e->opt, e->short_name);
+            argh__sb_put(&b, "' (at most ");
+            argh__sb_put(&b, num);
+            argh__sb_char(&b, ')');
+            break;
+        }
+        case ARGH_E_CONFIG:
+            argh__sb_put(&b, "configuration error: ");
+            argh__sb_put(&b, e->detail);
+            if (e->opt)
+            {
+                argh__sb_put(&b, " (");
+                argh__sb_opt_name(&b, e->opt, 0);
+                argh__sb_char(&b, ')');
+            }
+            break;
+        }
+        return b.len;
+    }
+
+    /* ------------------------------------------------------------------------
+     * Help
+     * ------------------------------------------------------------------------ */
+
+    static void argh__sb_metavar(argh__sb *b, const argh_opt *o)
+    {
+        if (o->metavar)
+        {
+            argh__sb_put(b, o->metavar);
+            return;
+        }
+        switch (o->kind)
+        {
+        case ARGH_K_INT:
+        case ARGH_K_LONG:
+            argh__sb_put(b, "<n>");
+            break;
+        case ARGH_K_DOUBLE:
+            argh__sb_put(b, "<x>");
+            break;
+        case ARGH_K_ENUM:
+        {
+            const char *const *choices = (const char *const *)o->extra;
+            int i;
+            argh__sb_char(b, '<');
+            for (i = 0; choices && choices[i]; i++)
+            {
+                if (i)
+                    argh__sb_char(b, '|');
+                argh__sb_put(b, choices[i]);
+            }
+            argh__sb_char(b, '>');
+            break;
+        }
+        default:
+            argh__sb_put(b, "<value>");
+            break;
+        }
+    }
+
+    /* Left help column for one entry, without indentation */
+    static size_t argh__left_column(const argh_opt *o, char *buf, size_t size)
+    {
+        argh__sb b;
+        b.buf = buf;
+        b.size = size;
+        b.len = 0;
+        buf[0] = '\0';
+
+        if (o->kind == ARGH_K_POS)
+        {
+            argh__sb_char(&b, (o->flags & ARGH_OPTIONAL) ? '[' : '<');
+            argh__sb_put(&b, o->long_name);
+            argh__sb_char(&b, (o->flags & ARGH_OPTIONAL) ? ']' : '>');
+            return b.len;
+        }
+        if (o->kind == ARGH_K_REST)
+        {
+            argh__sb_char(&b, (o->flags & ARGH_REQUIRED) ? '<' : '[');
+            argh__sb_put(&b, o->long_name);
+            argh__sb_put(&b, (o->flags & ARGH_REQUIRED) ? ">..." : "...]");
+            return b.len;
+        }
+
+        if (o->short_name)
+        {
+            argh__sb_char(&b, '-');
+            argh__sb_char(&b, o->short_name);
+            if (o->long_name)
+                argh__sb_put(&b, ", ");
+        }
+        else
+        {
+            argh__sb_put(&b, "    ");
+        }
+        if (o->long_name)
+        {
+            argh__sb_put(&b, (o->kind == ARGH_K_FLAG && (o->flags & ARGH_NEGATABLE)) ? "--[no-]" : "--");
+            argh__sb_put(&b, o->long_name);
+        }
+        if (argh__takes_value(o))
+        {
+            argh__sb_char(&b, ' ');
+            argh__sb_metavar(&b, o);
+        }
+        return b.len;
+    }
+
+    /* " (default: ...)" from the variable's current value */
+    static void argh__help_default(const argh_parser *p, const argh_opt *o)
+    {
+        char num[48];
+        const char *text = NULL;
+
+        if (o->flags & ARGH_REQUIRED)
+        {
+            argh__out(p, 0, " (required)");
+            return;
+        }
+        switch (o->kind)
+        {
+        case ARGH_K_INT:
+            snprintf(num, sizeof(num), "%d", *(const int *)o->target);
+            text = num;
+            break;
+        case ARGH_K_LONG:
+            snprintf(num, sizeof(num), "%ld", *(const long *)o->target);
+            text = num;
+            break;
+        case ARGH_K_DOUBLE:
+            snprintf(num, sizeof(num), "%g", *(const double *)o->target);
+            text = num;
+            break;
+        case ARGH_K_STRING:
+            text = *(const char *const *)o->target;
+            break;
+        case ARGH_K_ENUM:
+        {
+            const char *const *choices = (const char *const *)o->extra;
+            int v = *(const int *)o->target;
+            int i;
+            for (i = 0; choices[i]; i++)
+                if (i == v)
+                    text = choices[i];
+            break;
+        }
+        default:
+            break;
+        }
+        if (text)
+        {
+            argh__out(p, 0, " (default: ");
+            argh__out(p, 0, text);
+            argh__out(p, 0, ")");
+        }
+    }
+
+    static void argh__help_line(const argh_parser *p, const char *left, size_t left_len,
+                                const char *help, int column, const argh_opt *o)
+    {
+        argh__spaces(p, 2);
+        argh__outn(p, 0, left, left_len);
+        if ((int)left_len > column)
+        {
+            argh__out(p, 0, "\n");
+            argh__spaces(p, 2 + column + 2);
+        }
+        else
+        {
+            argh__spaces(p, column - (int)left_len + 2);
+        }
+        argh__out(p, 0, help);
+        if (o)
+            argh__help_default(p, o);
+        argh__out(p, 0, "\n");
+    }
+
+    void argh_print_help(const argh_parser *p)
+    {
+        char left[128];
+        int column = 0;
+        bool has_positionals = false;
+        bool in_section = false;
+        bool auto_help = argh__auto_help(p);
+
+        /* Column width: widest visible entry, capped */
+        ARGH__EACH(p, o, index)
+        {
+            size_t len;
+            (void)index;
+            if (o->kind == ARGH_K_GROUP || (o->flags & ARGH_HIDDEN))
+                continue;
+            if (o->kind == ARGH_K_POS || o->kind == ARGH_K_REST)
+                has_positionals = true;
+            len = argh__left_column(o, left, sizeof(left));
+            if ((int)len > column && len <= ARGH__HELP_COLUMN_MAX)
+                column = (int)len;
+        }
+        if (auto_help && column < 13)
+            column = 13; /* "-V, --version" */
+
+        argh__out(p, 0, "Usage: ");
+        argh__out(p, 0, p->argh__name);
+        argh__out(p, 0, " [OPTIONS]");
+        ARGH__EACH(p, o, index)
+        {
+            (void)index;
+            if (o->kind == ARGH_K_POS || o->kind == ARGH_K_REST)
+            {
+                size_t len = argh__left_column(o, left, sizeof(left));
+                argh__out(p, 0, " ");
+                argh__outn(p, 0, left, len);
             }
         }
-        else if (argh__is_short_option(arg))
+        argh__out(p, 0, "\n");
+
+        if (p->argh__about)
         {
-            /* Short option: -v or -abc or -o value */
-            name = arg + 1;
-            value = NULL; /* Reset value for short options */
-
-            /* Handle combined short options: -abc */
-            if (strlen(name) > 1)
-            {
-                bool all_bool = true;
-                bool has_unknown = false;
-
-                /* First pass: check if all are defined bool options */
-                for (size_t c = 0; name[c]; c++)
-                {
-                    char ch[2] = {name[c], '\0'};
-                    argh_Option *copt = argh__find_option(parser, ch);
-                    if (!copt)
-                    {
-                        has_unknown = true;
-                        break;
-                    }
-                    if (copt->type != ARGH_BOOL)
-                    {
-                        all_bool = false;
-                        break;
-                    }
-                }
-
-                if (all_bool && !has_unknown)
-                {
-                    /* All are bool options - mark them all as present */
-                    for (size_t c = 0; name[c]; c++)
-                    {
-                        char ch[2] = {name[c], '\0'};
-                        argh_Option *copt = argh__find_option(parser, ch);
-                        copt->present = true;
-                        copt->value = "true";
-                    }
-                    /* Skip further processing - all handled */
-                    continue;
-                }
-                else if (has_unknown)
-                {
-                    argh__add_error(parser, ARGH_ERR_UNKNOWN_OPTION, name, "Unknown option");
-                    continue;
-                }
-                else
-                {
-                    /* Mixed bool and non-bool - not supported in combined form */
-                    argh__add_error(parser, ARGH_ERR_INVALID_VALUE, name,
-                                    "Cannot combine non-bool options");
-                    continue;
-                }
-            }
-
-            opt = argh__find_option(parser, name);
+            argh__out(p, 0, "\n");
+            argh__out(p, 0, p->argh__about);
+            argh__out(p, 0, "\n");
         }
 
-        /* Unknown option */
-        if (!opt)
+        if (has_positionals)
         {
-            argh__add_error(parser, ARGH_ERR_UNKNOWN_OPTION, name, "Unknown option");
-            continue;
-        }
-
-        /* Get value for non-bool options */
-        if (opt->type != ARGH_BOOL)
-        {
-            if (!value)
+            argh__out(p, 0, "\nArguments:\n");
+            ARGH__EACH(p, o, index)
             {
-                /* Try next argument as value */
-                if (i + 1 < parser->argc && argh__is_value(parser->argv[i + 1]))
+                (void)index;
+                if ((o->kind == ARGH_K_POS || o->kind == ARGH_K_REST) && !(o->flags & ARGH_HIDDEN))
                 {
-                    i++;
-                    value = parser->argv[i];
-                }
-                else
-                {
-                    argh__add_error(parser, ARGH_ERR_MISSING_VALUE,
-                                    opt->long_name, "Missing required value");
-                    continue;
+                    size_t len = argh__left_column(o, left, sizeof(left));
+                    argh__help_line(p, left, len, o->help, column, NULL);
                 }
             }
+        }
 
-            /* Validate value */
-            bool valid = true;
-            if (!argh__add_value(parser, value))
+        ARGH__EACH(p, o, index)
+        {
+            size_t len;
+            (void)index;
+            if (o->kind == ARGH_K_GROUP)
             {
-                argh__add_error(parser, ARGH_ERR_INTERNAL, opt->long_name, "Memory allocation failed");
+                argh__out(p, 0, "\n");
+                argh__out(p, 0, o->help);
+                argh__out(p, 0, ":\n");
+                in_section = true;
                 continue;
             }
-            opt->value = parser->_values[parser->_values_count - 1];
-
-            switch (opt->type)
+            if (!argh__is_option_kind(o->kind) || (o->flags & ARGH_HIDDEN))
+                continue;
+            if (!in_section)
             {
-            case ARGH_INT:
-            {
-                int tmp;
-                if (!argh__parse_int(opt->value, &tmp))
-                    valid = false;
-                break;
+                argh__out(p, 0, "\nOptions:\n");
+                in_section = true;
             }
-            case ARGH_FLOAT:
-            {
-                float tmp;
-                if (!argh__parse_float(opt->value, &tmp))
-                    valid = false;
-                break;
-            }
-            case ARGH_DOUBLE:
-            {
-                double tmp;
-                if (!argh__parse_double(opt->value, &tmp))
-                    valid = false;
-                break;
-            }
-            default:
-                break;
-            }
-
-            if (!valid)
-            {
-                argh__add_error(parser, ARGH_ERR_INVALID_VALUE,
-                                opt->long_name, "Invalid value format");
-            }
-        }
-        else
-        {
-            /* Bool option */
-            opt->present = true;
-            if (!value)
-            {
-                opt->value = "true";
-            }
-            else
-            {
-                bool bval = false;
-                if (!argh__parse_bool(value, &bval))
-                {
-                    argh__add_error(parser, ARGH_ERR_INVALID_VALUE,
-                                    opt->long_name, "Invalid boolean value");
-                    continue;
-                }
-                opt->value = bval ? "true" : "false";
-            }
+            len = argh__left_column(o, left, sizeof(left));
+            argh__help_line(p, left, len, o->help, column, o);
         }
 
-        opt->present = true;
-
-        /* Check for help option */
-        if (argh__strcmp(opt->long_name, "help") == 0 ||
-            argh__strcmp(opt->short_name, "h") == 0)
+        if (auto_help)
         {
-            parser->help_requested = true;
+            argh__out(p, 0, in_section ? "\n" : "\nOptions:\n");
+            argh__help_line(p, "-h, --help", 10, "Print help", column, NULL);
+            if (p->argh__version)
+                argh__help_line(p, "-V, --version", 13, "Print version", column, NULL);
         }
     }
 
-    /* Check required options */
-    for (size_t i = 0; i < parser->option_count; i++)
-    {
-        argh_Option *opt = &parser->options[i];
-        if (opt->required && !opt->present)
-        {
-            argh__add_error(parser, ARGH_ERR_REQUIRED_MISSING,
-                            opt->long_name, "Required option missing");
-        }
-    }
+#undef ARGH__EACH
+#undef ARGH__EACH_T
 
-    return !argh_has_errors(parser);
+#ifdef __cplusplus
 }
+#endif
 
-bool argh_get_bool(argh_Parser *parser, const char *name)
-{
-    argh_Option *opt = argh__find_option(parser, name);
-    if (!opt)
-        return false;
-
-    bool result;
-    if (argh__parse_bool(opt->value, &result))
-        return result;
-    return opt->present;
-}
-
-int argh_get_int(argh_Parser *parser, const char *name)
-{
-    argh_Option *opt = argh__find_option(parser, name);
-    if (!opt || !opt->value)
-        return 0;
-
-    int result;
-    if (argh__parse_int(opt->value, &result))
-        return result;
-    return 0;
-}
-
-float argh_get_float(argh_Parser *parser, const char *name)
-{
-    argh_Option *opt = argh__find_option(parser, name);
-    if (!opt || !opt->value)
-        return 0.0f;
-
-    float result;
-    if (argh__parse_float(opt->value, &result))
-        return result;
-    return 0.0f;
-}
-
-double argh_get_double(argh_Parser *parser, const char *name)
-{
-    argh_Option *opt = argh__find_option(parser, name);
-    if (!opt || !opt->value)
-        return 0.0;
-
-    double result;
-    if (argh__parse_double(opt->value, &result))
-        return result;
-    return 0.0;
-}
-
-const char *argh_get_string(argh_Parser *parser, const char *name)
-{
-    argh_Option *opt = argh__find_option(parser, name);
-    return opt ? opt->value : NULL;
-}
-
-bool argh_has(argh_Parser *parser, const char *name)
-{
-    argh_Option *opt = argh__find_option(parser, name);
-    return opt && opt->present;
-}
-
-bool argh_has_errors(argh_Parser *parser)
-{
-    return parser && parser->error_count > 0;
-}
-
-const char *argh_error_string(argh_ErrorCode code)
-{
-    switch (code)
-    {
-    case ARGH_ERR_NONE:
-        return "No error";
-    case ARGH_ERR_UNKNOWN_OPTION:
-        return "Unknown option";
-    case ARGH_ERR_MISSING_VALUE:
-        return "Missing value";
-    case ARGH_ERR_INVALID_VALUE:
-        return "Invalid value";
-    case ARGH_ERR_DUPLICATE_OPTION:
-        return "Duplicate option";
-    case ARGH_ERR_REQUIRED_MISSING:
-        return "Required option missing";
-    case ARGH_ERR_TOO_MANY_POSITIONAL:
-        return "Too many positional arguments";
-    case ARGH_ERR_INTERNAL:
-        return "Internal error";
-    default:
-        return "Unknown error";
-    }
-}
-
-void argh_print_error(argh_Parser *parser)
-{
-    if (!parser || !parser->error_count)
-        return;
-
-    fprintf(stderr, "Error: ");
-    for (size_t i = 0; i < parser->error_count; i++)
-    {
-        argh_Error *err = &parser->errors[i];
-        if (err->option)
-        {
-            fprintf(stderr, "%s: %s", err->option, argh_error_string(err->code));
-        }
-        else
-        {
-            fprintf(stderr, "%s", argh_error_string(err->code));
-        }
-        if (i < parser->error_count - 1)
-            fprintf(stderr, "; ");
-    }
-    fprintf(stderr, "\n");
-}
-
-void argh_print_help(argh_Parser *parser)
-{
-    if (!parser)
-        return;
-
-    printf("Usage: %s [OPTIONS] [POSITIONAL...]\n\n", parser->program);
-
-    if (parser->option_count == 0)
-    {
-        printf("No options defined.\n");
-        return;
-    }
-
-    printf("Options:\n");
-
-    /* Calculate max width for alignment */
-    size_t max_width = 0;
-    for (size_t i = 0; i < parser->option_count; i++)
-    {
-        argh_Option *opt = &parser->options[i];
-        size_t width = 2; /* -X */
-        if (opt->short_name && opt->long_name)
-        {
-            width += strlen(opt->short_name) + 2 + strlen(opt->long_name) + 2; /* -x, --long */
-        }
-        else if (opt->short_name)
-        {
-            width += strlen(opt->short_name);
-        }
-        else if (opt->long_name)
-        {
-            width += 2 + strlen(opt->long_name);
-        }
-        if (opt->type != ARGH_BOOL)
-        {
-            width += 6; /* <VAL> */
-        }
-        if (width > max_width)
-            max_width = width;
-    }
-
-    /* Print options */
-    for (size_t i = 0; i < parser->option_count; i++)
-    {
-        argh_Option *opt = &parser->options[i];
-
-        /* Build option string */
-        char opt_str[128] = "  ";
-        char *p = opt_str + 2;
-        size_t remaining = sizeof(opt_str) - 2;
-
-        if (opt->short_name)
-        {
-            int written = snprintf(p, remaining, "-%s", opt->short_name);
-            if (written > 0)
-            {
-                p += written;
-                remaining -= (size_t)written;
-            }
-            if (opt->long_name && remaining > 0)
-            {
-                written = snprintf(p, remaining, ", ");
-                if (written > 0)
-                {
-                    p += written;
-                    remaining -= (size_t)written;
-                }
-            }
-        }
-        if (opt->long_name && remaining > 0)
-        {
-            int written = snprintf(p, remaining, "--%s", opt->long_name);
-            if (written > 0)
-            {
-                p += written;
-                remaining -= (size_t)written;
-            }
-        }
-        if (opt->type != ARGH_BOOL && remaining > 0)
-        {
-            int written = snprintf(p, remaining, " <VAL>");
-            if (written > 0)
-            {
-                p += written;
-                remaining -= (size_t)written;
-            }
-        }
-
-        /* Print with padding */
-        printf("%-*s", (int)(max_width + 2), opt_str);
-
-        /* Print description */
-        if (opt->description)
-        {
-            printf("%s", opt->description);
-        }
-
-        /* Print default value */
-        if (opt->default_value && opt->type != ARGH_BOOL)
-        {
-            printf(" [default: %s]", opt->default_value);
-        }
-
-        /* Print required marker */
-        if (opt->required)
-        {
-            printf(" [required]");
-        }
-
-        printf("\n");
-    }
-
-    printf("\n");
-}
-
+#endif /* ARGH_IMPLEMENTATION_DONE */
 #endif /* ARGH_IMPLEMENTATION */
 
 /*

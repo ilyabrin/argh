@@ -4,6 +4,7 @@
 #   make            build tests and example
 #   make test       build and run tests
 #   make bench      run benchmarks (speed and code size)
+#   make cxx        check that argh.h compiles as C++
 #   make CC=clang   use a different compiler
 
 CFLAGS ?= -std=c99 -Wall -Wextra -Wpedantic -Werror -O2
@@ -20,7 +21,7 @@ else
     RM  = rm -f
 endif
 
-.PHONY: all test bench clean
+.PHONY: all test bench cxx clean
 
 all: test_argh$(EXE) example$(EXE)
 
@@ -30,16 +31,19 @@ test: test_argh$(EXE)
 test_argh$(EXE): tests/test_argh.c argh.h
 	$(CC) $(CFLAGS) -o $@ tests/test_argh.c $(LDFLAGS)
 
-# Benchmarks use C11 for timespec_get and -O2 regardless of CFLAGS
+# Benchmarks measure a release build: C11 for timespec_get, -O2, NDEBUG
 bench: bench_parse$(EXE)
 	./bench_parse$(EXE)
 	sh bench/size.sh $(CC)
 
 bench_parse$(EXE): bench/bench_parse.c argh.h
-	$(CC) -std=c11 -O2 -Wall -Wextra -o $@ bench/bench_parse.c
+	$(CC) -std=c11 -O2 -DNDEBUG -Wall -Wextra -o $@ bench/bench_parse.c
+
+cxx: tests/cxx_check.cpp argh.h
+	$(CXX) -std=c++11 -Wall -Wextra -Wpedantic -Werror -o cxx_check$(EXE) tests/cxx_check.cpp
 
 example$(EXE): example.c argh.h
 	$(CC) $(CFLAGS) -o $@ example.c $(LDFLAGS)
 
 clean:
-	-$(RM) test_argh$(EXE) example$(EXE) bench_parse$(EXE)
+	-$(RM) test_argh$(EXE) example$(EXE) bench_parse$(EXE) cxx_check$(EXE)

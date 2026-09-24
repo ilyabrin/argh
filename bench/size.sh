@@ -31,5 +31,5 @@ echo "Compiler: $($CC --version | head -n 1)"
 echo "Flags:    $FLAGS"
 echo
 printf '%-14s %10s\n' "parser" ".text added"
-printf '%-14s %8s B\n' "argh v0.1" $(( $(text "$OUT/argh") - base ))
+printf '%-14s %8s B\n' "argh" $(( $(text "$OUT/argh") - base ))
 printf '%-14s %8s B\n' "getopt_long" $(( $(text "$OUT/getopt") - base ))
