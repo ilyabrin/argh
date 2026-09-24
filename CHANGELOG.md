@@ -6,6 +6,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-24
+
 v0.2 replaces the API. See [Upgrading from 0.1](README.md#upgrading-from-01).
 
 ### Changed
@@ -62,5 +64,6 @@ Compared with the code before the public release:
 
 - `argh_set_description` and `argh_set_help_width`, which had no effect.
 
-[Unreleased]: https://github.com/ilyabrin/argh/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/ilyabrin/argh/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/ilyabrin/argh/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/ilyabrin/argh/releases/tag/v0.1.0
