@@ -91,6 +91,13 @@ static void setup(argh_parser *p)
     argh_set_writer(p, capture, NULL);
 }
 
+/* Expected suffix of an error message, empty when suggestions are off */
+#ifdef ARGH_NO_SUGGEST
+#define DID_YOU_MEAN(name) ""
+#else
+#define DID_YOU_MEAN(name) " (did you mean '" name "'?)"
+#endif
+
 /* The one-line error message of the last parse */
 static const char *error_text(const argh_parser *p)
 {
@@ -610,8 +617,8 @@ TEST(test_unknown_long)
 
     ASSERT_FALSE(argh_parse(&p, argc, argv));
     ASSERT_EQ(argh_last_error(&p)->argv_index, 1);
-    ASSERT_STR_EQ(error_text(&p), "unknown option '--verbos' (did you mean '--verbose'?)");
-    ASSERT_STR_EQ(err_text, "prog: unknown option '--verbos' (did you mean '--verbose'?)\n"
+    ASSERT_STR_EQ(error_text(&p), "unknown option '--verbos'" DID_YOU_MEAN("--verbose"));
+    ASSERT_STR_EQ(err_text, "prog: unknown option '--verbos'" DID_YOU_MEAN("--verbose") "\n"
                             "Try 'prog --help' for more information.\n");
     ASSERT_EQ(argh_exit_code(&p), 2);
 }
@@ -1090,6 +1097,7 @@ TEST(test_parse_twice_resets_state)
     ASSERT_TRUE(argh_given(&p, &verbose));
 }
 
+#ifndef ARGH_NO_COMMANDS
 /* ============================================================================
  * Commands
  * ============================================================================ */
@@ -1247,8 +1255,8 @@ TEST(test_command_unknown)
 
     ASSERT_FALSE(argh_parse(&p, argc, argv));
     ASSERT_EQ(argh_exit_code(&p), 2);
-    ASSERT_STR_EQ(error_text(&p), "unknown command 'biuld' (did you mean 'build'?)");
-    ASSERT_STR_EQ(err_text, "tool: unknown command 'biuld' (did you mean 'build'?)\n"
+    ASSERT_STR_EQ(error_text(&p), "unknown command 'biuld'" DID_YOU_MEAN("build"));
+    ASSERT_STR_EQ(err_text, "tool: unknown command 'biuld'" DID_YOU_MEAN("build") "\n"
                             "Try 'tool --help' for more information.\n");
 }
 
@@ -1430,6 +1438,9 @@ TEST(test_command_posix_mode_at_leaf)
     ASSERT_STR_EQ(c_args.items[1], "-v");
 }
 
+#endif /* ARGH_NO_COMMANDS */
+
+#ifndef ARGH_NO_SUGGEST
 /* ============================================================================
  * Suggestions
  * ============================================================================ */
@@ -1480,6 +1491,7 @@ TEST(test_suggest_nothing_far_away)
     ASSERT_TRUE(suggestion_for("--secret-mod") == NULL); /* hidden options stay hidden */
 }
 
+#ifndef ARGH_NO_COMMANDS
 TEST(test_suggest_commands)
 {
     char *nested[] = {(char *)"tool", (char *)"remote", (char *)"ad", NULL};
@@ -1515,6 +1527,8 @@ TEST(test_suggest_on_command_path)
     ASSERT_FALSE(argh_parse(&p, 3, other));
     ASSERT_TRUE(argh_last_error(&p)->suggestion == NULL);
 }
+#endif /* ARGH_NO_COMMANDS */
+#endif /* ARGH_NO_SUGGEST */
 
 TEST(test_parser_size)
 {
@@ -1601,31 +1615,81 @@ int main(void)
     RUN_TEST(test_given);
     RUN_TEST(test_empty_argv);
     RUN_TEST(test_parse_twice_resets_state);
+#if !defined(ARGH_NO_COMMANDS)
     RUN_TEST(test_command_dispatch);
+#endif
+#if !defined(ARGH_NO_COMMANDS)
     RUN_TEST(test_command_global_option_before_and_after);
+#endif
+#if !defined(ARGH_NO_COMMANDS)
     RUN_TEST(test_command_option_before_command_is_unknown);
+#endif
+#if !defined(ARGH_NO_COMMANDS)
     RUN_TEST(test_command_options_of_other_commands_are_unknown);
+#endif
+#if !defined(ARGH_NO_COMMANDS)
     RUN_TEST(test_command_nested);
+#endif
+#if !defined(ARGH_NO_COMMANDS)
     RUN_TEST(test_command_without_options);
+#endif
+#if !defined(ARGH_NO_COMMANDS)
     RUN_TEST(test_command_rest_and_double_dash);
+#endif
+#if !defined(ARGH_NO_COMMANDS)
     RUN_TEST(test_command_unknown);
+#endif
+#if !defined(ARGH_NO_COMMANDS)
     RUN_TEST(test_command_missing);
+#endif
+#if !defined(ARGH_NO_COMMANDS)
     RUN_TEST(test_command_missing_nested);
+#endif
+#if !defined(ARGH_NO_COMMANDS)
     RUN_TEST(test_command_help_root);
+#endif
+#if !defined(ARGH_NO_COMMANDS)
     RUN_TEST(test_command_help_leaf);
+#endif
+#if !defined(ARGH_NO_COMMANDS)
     RUN_TEST(test_command_help_subcommand);
+#endif
+#if !defined(ARGH_NO_COMMANDS)
     RUN_TEST(test_command_help_group);
+#endif
+#if !defined(ARGH_NO_COMMANDS)
     RUN_TEST(test_command_help_unknown);
+#endif
+#if !defined(ARGH_NO_COMMANDS)
     RUN_TEST(test_command_config_root_positional);
+#endif
+#if !defined(ARGH_NO_COMMANDS)
     RUN_TEST(test_command_config_reserved_help);
+#endif
+#if !defined(ARGH_NO_COMMANDS)
     RUN_TEST(test_command_config_duplicate_with_global);
+#endif
+#if !defined(ARGH_NO_COMMANDS)
     RUN_TEST(test_command_posix_mode_at_leaf);
+#endif
+#if !defined(ARGH_NO_SUGGEST)
     RUN_TEST(test_suggest_options);
+#endif
+#if !defined(ARGH_NO_SUGGEST)
     RUN_TEST(test_suggest_value_form);
+#endif
+#if !defined(ARGH_NO_SUGGEST)
     RUN_TEST(test_suggest_builtins);
+#endif
+#if !defined(ARGH_NO_SUGGEST)
     RUN_TEST(test_suggest_nothing_far_away);
+#endif
+#if !defined(ARGH_NO_SUGGEST) && !defined(ARGH_NO_COMMANDS)
     RUN_TEST(test_suggest_commands);
+#endif
+#if !defined(ARGH_NO_SUGGEST) && !defined(ARGH_NO_COMMANDS)
     RUN_TEST(test_suggest_on_command_path);
+#endif
     RUN_TEST(test_parser_size);
 
     printf("\nRun: %d\nPassed: %d\nFailed: %d\n", tests_run, tests_passed, tests_failed);

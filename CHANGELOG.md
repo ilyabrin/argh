@@ -13,6 +13,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - Help for every command level, with a `Global options` section, and `tool help <command>`.
 - A missing command is an error that lists the available commands.
 - "Did you mean" suggestions for mistyped long options and commands: `unknown option '--verbsoe' (did you mean '--verbose'?)`. Also available as `argh_error.suggestion`. `ARGH_NO_SUGGEST` removes them.
+- `ARGH_NO_COMMANDS` removes command support, so programs without commands keep the code size of v0.2.
 
 ## [0.2.0] - 2026-09-24
 
