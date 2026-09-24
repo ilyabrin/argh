@@ -30,8 +30,9 @@
  *
  * CONFIGURATION (define before including)
  *   ARGH_BUILDER_CAP  options that argh_flag()/argh_int()/... can add (32)
- *   ARGH_MAX_OPTS     options per parser, all tables combined (64)
+ *   ARGH_MAX_OPTS     options on the active command path, all tables (64)
  *   ARGH_MAX_TABLES   tables per parser, the builder counts as one (8)
+ *   ARGH_MAX_DEPTH    levels of nested commands (4)
  *
  * LICENSE: MIT (see end of file)
  */
@@ -52,6 +53,10 @@
 
 #ifndef ARGH_MAX_TABLES
 #define ARGH_MAX_TABLES 8
+#endif
+
+#ifndef ARGH_MAX_DEPTH
+#define ARGH_MAX_DEPTH 4
 #endif
 
 #ifdef __cplusplus
@@ -110,7 +115,9 @@ extern "C"
         ARGH_E_MISSING_REQUIRED,    /* required option or positional absent */
         ARGH_E_REPEATED,            /* ARGH_ONCE option given twice */
         ARGH_E_TOO_MANY_VALUES,     /* list buffer full */
-        ARGH_E_CONFIG               /* mistake in the option definitions */
+        ARGH_E_CONFIG,              /* mistake in the option definitions */
+        ARGH_E_UNKNOWN_COMMAND,     /* tool remtoe */
+        ARGH_E_MISSING_COMMAND      /* tool (when a command is required) */
     } argh_err;
 
     /* One option, positional or help heading. Build it with the ARGH_* macros
@@ -151,6 +158,19 @@ extern "C"
         const char *detail;  /* extra context for ARGH_E_CONFIG */
     } argh_error;
 
+    struct argh_parser;
+
+    /* A command: `tool <name> ...`. Build tables of them with ARGH_CMD,
+     * ARGH_CMD_GROUP and ARGH_CMD_END. */
+    typedef struct argh_cmd
+    {
+        const char *name;
+        const char *help;
+        const argh_opt *opts;         /* options and positionals, NULL if none */
+        const struct argh_cmd *subs;  /* subcommands, NULL for a leaf */
+        int (*run)(struct argh_parser *p, void *user); /* handler, NULL if none */
+    } argh_cmd;
+
     /* Output sink for help, version and error messages. */
     typedef void (*argh_write_fn)(void *ctx, int to_stderr, const char *text, size_t len);
 
@@ -175,6 +195,10 @@ extern "C"
         argh_write_fn argh__write;
         void *argh__write_ctx;
 
+        const argh_cmd *argh__commands;
+        const argh_cmd *argh__path[ARGH_MAX_DEPTH];
+        int argh__depth;
+
         argh_error argh__error;
     } argh_parser;
 
@@ -198,6 +222,11 @@ extern "C"
     /* Adds an option table ending with ARGH_END. Tables and builder calls can
      * be mixed; options appear in help in the order they were added. */
     void argh_table(argh_parser *p, const argh_opt *table);
+
+    /* Sets the top-level commands, a table ending with ARGH_CMD_END. Options
+     * added with argh_table() and builder calls become global options that
+     * work before and after the command name. */
+    void argh_commands(argh_parser *p, const argh_cmd *commands);
 
     /* ============================================================================
      * Builder: add options one call at a time
@@ -240,6 +269,13 @@ extern "C"
 
     /* True if the option bound to target appeared on the command line. */
     bool argh_given(const argh_parser *p, const void *target);
+
+    /* The command that was selected (the deepest one), NULL without commands. */
+    const argh_cmd *argh_command(const argh_parser *p);
+
+    /* Calls the selected command's handler and returns its result, or 0 if the
+     * command has no handler. */
+    int argh_run(argh_parser *p, void *user);
 
     /* The error from the last argh_parse(), code ARGH_E_NONE if none. */
     const argh_error *argh_last_error(const argh_parser *p);
@@ -294,6 +330,26 @@ extern "C"
 #define ARGH_GROUP(title) {0, NULL, (unsigned char)ARGH_K_GROUP, 0, NULL, NULL, (title), NULL}
 #define ARGH_END {0, NULL, (unsigned char)ARGH_K_END, 0, NULL, NULL, NULL, NULL}
 
+    /* ============================================================================
+     * Command macros
+     *
+     *   static const argh_cmd commands[] = {
+     *       ARGH_CMD("build", "Build the project", build_opts, run_build),
+     *       ARGH_CMD("clean", "Remove build output", NULL),
+     *       ARGH_CMD_GROUP("remote", "Manage remotes", remote_commands),
+     *       ARGH_CMD_END
+     *   };
+     *
+     * ARGH_CMD(name, help, options[, handler]): the handler is optional.
+     * ARGH_CMD_GROUP(name, help, subcommands): a command that only holds
+     * other commands.
+     * ============================================================================ */
+
+#define ARGH_CMD(name, help, ...) \
+    {(name), (help), ARGH__FIRST(__VA_ARGS__), NULL, ARGH__SECOND(__VA_ARGS__)}
+#define ARGH_CMD_GROUP(name, help, subs) {(name), (help), NULL, (subs), NULL}
+#define ARGH_CMD_END {NULL, NULL, NULL, NULL, NULL}
+
 #ifdef __cplusplus
 }
 #endif
@@ -333,12 +389,44 @@ extern "C"
 /* Widest left column in help before descriptions move to the next line */
 #define ARGH__HELP_COLUMN_MAX 30
 
-/* Iterates all entries of all tables with a global index. The _T form takes
- * the table counter name so that loops can be nested. */
-#define ARGH__EACH_T(p, t, o, idx)                                                 \
-    for (int t = 0, idx = 0; t < (p)->argh__table_count; t++)                      \
-        for (const argh_opt *o = (p)->argh__tables[t]; o->kind != ARGH_K_END; o++, idx++)
+/* Iterates all entries on the active path: the parser's tables, then the
+ * options of each selected command. idx is a stable index for the "seen"
+ * bitset. The _T form takes the slot counter name so loops can be nested. */
+#define ARGH__EACH_T(p, t, o, idx)                                                     \
+    for (int t = 0, idx = 0; t < argh__slot_count(p); t++)                             \
+        for (const argh_opt *o = argh__slot(p, t); o->kind != ARGH_K_END; o++, idx++)
 #define ARGH__EACH(p, o, idx) ARGH__EACH_T(p, argh__t, o, idx)
+
+    static const argh_opt argh__empty_table[1] = {ARGH_END};
+
+    /* Slots: tables first, then one per command on the path */
+    static int argh__slot_count(const argh_parser *p)
+    {
+        return p->argh__table_count + p->argh__depth;
+    }
+
+    static const argh_opt *argh__slot(const argh_parser *p, int slot)
+    {
+        const argh_opt *t;
+        if (slot < p->argh__table_count)
+            return p->argh__tables[slot];
+        t = p->argh__path[slot - p->argh__table_count]->opts;
+        return t ? t : argh__empty_table;
+    }
+
+    /* Subcommands expected at the current level, NULL if none */
+    static const argh_cmd *argh__level_commands(const argh_parser *p)
+    {
+        return p->argh__depth ? p->argh__path[p->argh__depth - 1]->subs : p->argh__commands;
+    }
+
+    static const argh_cmd *argh__find_command(const argh_cmd *cmds, const char *name)
+    {
+        for (; cmds && cmds->name; cmds++)
+            if (strcmp(cmds->name, name) == 0)
+                return cmds;
+        return NULL;
+    }
 
     /* ------------------------------------------------------------------------
      * Output helpers
@@ -458,14 +546,19 @@ extern "C"
         return NULL;
     }
 
+    /* Indices past ARGH_MAX_OPTS are ignored here and reported as a
+     * configuration error after the scan */
     static bool argh__seen(const argh_parser *p, int index)
     {
+        if (index >= ARGH_MAX_OPTS)
+            return false;
         return (p->argh__seen[index >> 3] >> (index & 7)) & 1u;
     }
 
     static void argh__mark(argh_parser *p, int index)
     {
-        p->argh__seen[index >> 3] = (unsigned char)(p->argh__seen[index >> 3] | (1u << (index & 7)));
+        if (index < ARGH_MAX_OPTS)
+            p->argh__seen[index >> 3] = (unsigned char)(p->argh__seen[index >> 3] | (1u << (index & 7)));
     }
 
     /* ------------------------------------------------------------------------
@@ -637,6 +730,12 @@ extern "C"
         return !(p->argh__flags & ARGH_NO_AUTO_HELP);
     }
 
+    static int argh__config_error(argh_parser *p, const char *detail, const argh_opt *o)
+    {
+        p->argh__error.detail = detail;
+        return argh__fail(p, ARGH_E_CONFIG, -1, o, NULL, 0);
+    }
+
     static int argh__apply(argh_parser *p, const argh_opt *o, int index, const char *v,
                            bool negated, int argi, char short_name)
     {
@@ -670,12 +769,31 @@ extern "C"
     /* One pass over argv. With apply == false nothing is written: the pass
      * only finds out whether help or version was requested, so that help can
      * show the defaults before any option changes them. */
+    /* `tool help remote add`: selects the named commands, then asks for help */
+    static int argh__help_command(argh_parser *p, int argc, char **argv, int i)
+    {
+        for (; i < argc && argv[i]; i++)
+        {
+            const argh_cmd *level = argh__level_commands(p);
+            const argh_cmd *c = argh__find_command(level, argv[i]);
+            if (!level)
+                return argh__fail(p, ARGH_E_UNEXPECTED_ARGUMENT, i, NULL, argv[i], 0);
+            if (!c)
+                return argh__fail(p, ARGH_E_UNKNOWN_COMMAND, i, NULL, argv[i], 0);
+            if (p->argh__depth >= ARGH_MAX_DEPTH)
+                return argh__config_error(p, "commands nested deeper than ARGH_MAX_DEPTH", NULL);
+            p->argh__path[p->argh__depth++] = c;
+        }
+        return ARGH__S_HELP;
+    }
+
     static int argh__scan(argh_parser *p, int argc, char **argv, bool apply, int *positional_count)
     {
         int w = 1;
         bool only_positionals = false;
         int i;
 
+        p->argh__depth = 0;
         for (i = 1; i < argc && argv[i]; i++)
         {
             char *arg = argv[i];
@@ -683,6 +801,23 @@ extern "C"
 
             if (only_positionals || arg[0] != '-' || arg[1] == '\0')
             {
+                const argh_cmd *level = only_positionals ? NULL : argh__level_commands(p);
+                if (level)
+                {
+                    /* At a level with subcommands, a positional names one */
+                    const argh_cmd *c = argh__find_command(level, arg);
+                    if (!c && argh__auto_help(p) && strcmp(arg, "help") == 0)
+                        return argh__help_command(p, argc, argv, i + 1);
+                    if (!c)
+                        rc = argh__fail(p, ARGH_E_UNKNOWN_COMMAND, i, NULL, arg, 0);
+                    else if (p->argh__depth >= ARGH_MAX_DEPTH)
+                        rc = argh__config_error(p, "commands nested deeper than ARGH_MAX_DEPTH", NULL);
+                    else
+                        p->argh__path[p->argh__depth++] = c;
+                    if (rc != ARGH__S_OK && apply)
+                        return rc;
+                    continue;
+                }
                 if (apply)
                     argh__move_positional(argv, &w, i);
                 if (p->argh__flags & ARGH_POSIX)
@@ -847,10 +982,61 @@ extern "C"
         return ARGH__S_OK;
     }
 
-    static int argh__config_error(argh_parser *p, const char *detail, const argh_opt *o)
+    static bool argh__has_positionals(const argh_opt *o)
     {
-        p->argh__error.detail = detail;
-        return argh__fail(p, ARGH_E_CONFIG, -1, o, NULL, 0);
+        for (; o && o->kind != ARGH_K_END; o++)
+            if (o->kind == ARGH_K_POS || o->kind == ARGH_K_REST)
+                return true;
+        return false;
+    }
+
+#ifndef NDEBUG
+    /* Walks the command tree: names, reserved "help", positionals next to
+     * subcommands. Debug builds only, like the duplicate check. */
+    static int argh__check_commands(argh_parser *p, const argh_cmd *cmds, int depth)
+    {
+        const argh_cmd *a, *b;
+        if (depth > ARGH_MAX_DEPTH)
+            return argh__config_error(p, "commands nested deeper than ARGH_MAX_DEPTH", NULL);
+        for (a = cmds; a->name; a++)
+        {
+            int st;
+            if (argh__auto_help(p) && strcmp(a->name, "help") == 0)
+                return argh__config_error(p, "command name 'help' is reserved, see ARGH_NO_AUTO_HELP", NULL);
+            for (b = a + 1; b->name; b++)
+                if (strcmp(a->name, b->name) == 0)
+                    return argh__config_error(p, "command defined twice", NULL);
+            if (a->subs && argh__has_positionals(a->opts))
+                return argh__config_error(p, "a command with subcommands cannot have positional arguments", NULL);
+            if (a->subs && (st = argh__check_commands(p, a->subs, depth + 1)) != ARGH__S_OK)
+                return st;
+        }
+        return ARGH__S_OK;
+    }
+#endif
+
+    /* Duplicate names on the active path: quadratic, so debug builds only */
+    static int argh__check_duplicates(argh_parser *p)
+    {
+#ifndef NDEBUG
+        ARGH__EACH_T(p, argh__ta, a, ia)
+        {
+            if (!argh__is_option_kind(a->kind))
+                continue;
+            ARGH__EACH_T(p, argh__tb, b, ib)
+            {
+                if (ib <= ia || !argh__is_option_kind(b->kind))
+                    continue;
+                if ((a->short_name && a->short_name == b->short_name) ||
+                    (a->long_name && b->long_name && a->long_name[0] == b->long_name[0] &&
+                     strcmp(a->long_name, b->long_name) == 0))
+                    return argh__config_error(p, "option defined twice", b);
+            }
+        }
+#else
+        (void)p;
+#endif
+        return ARGH__S_OK;
     }
 
     /* Catches mistakes in the definitions before any argument is read */
@@ -882,24 +1068,36 @@ extern "C"
         if (total > ARGH_MAX_OPTS)
             return argh__config_error(p, "more options than ARGH_MAX_OPTS", NULL);
 
-#ifndef NDEBUG
-        /* Duplicate names: quadratic, so debug builds only */
-        ARGH__EACH_T(p, argh__ta, a, ia)
+        if (p->argh__commands)
         {
-            if (!argh__is_option_kind(a->kind))
-                continue;
-            ARGH__EACH_T(p, argh__tb, b, ib)
+            for (int t = 0; t < p->argh__table_count; t++)
+                if (argh__has_positionals(p->argh__tables[t]))
+                    return argh__config_error(p, "positional arguments cannot be combined with commands", NULL);
+#ifndef NDEBUG
             {
-                if (ib <= ia || !argh__is_option_kind(b->kind))
-                    continue;
-                if ((a->short_name && a->short_name == b->short_name) ||
-                    (a->long_name && b->long_name && a->long_name[0] == b->long_name[0] &&
-                     strcmp(a->long_name, b->long_name) == 0))
-                    return argh__config_error(p, "option defined twice", b);
+                int st = argh__check_commands(p, p->argh__commands, 1);
+                if (st != ARGH__S_OK)
+                    return st;
             }
-        }
 #endif
+        }
         return ARGH__S_OK;
+    }
+
+    /* Checks that need the selected command path */
+    static int argh__check_path(argh_parser *p)
+    {
+        int total = 0;
+        ARGH__EACH(p, o, index)
+        {
+            (void)o;
+            total = index + 1;
+        }
+        if (total > ARGH_MAX_OPTS)
+            return argh__config_error(p, "more options than ARGH_MAX_OPTS on this command path", NULL);
+        if (argh__level_commands(p))
+            return argh__fail(p, ARGH_E_MISSING_COMMAND, -1, NULL, NULL, 0);
+        return argh__check_duplicates(p);
     }
 
     /* Cheap check whether a dry pass for help/version is worth running */
@@ -928,6 +1126,38 @@ extern "C"
         return false;
     }
 
+    /* "tool remote add": program name plus the selected commands */
+    static void argh__out_path(const argh_parser *p, int err)
+    {
+        int d;
+        argh__out(p, err, p->argh__name);
+        for (d = 0; d < p->argh__depth; d++)
+        {
+            argh__out(p, err, " ");
+            argh__out(p, err, p->argh__path[d]->name);
+        }
+    }
+
+    static void argh__print_commands(const argh_parser *p, int err, const argh_cmd *cmds)
+    {
+        const argh_cmd *c;
+        int width = 0;
+        for (c = cmds; c->name; c++)
+            if ((int)strlen(c->name) > width)
+                width = (int)strlen(c->name);
+        argh__out(p, err, "Commands:\n");
+        for (c = cmds; c->name; c++)
+        {
+            int pad = width - (int)strlen(c->name) + 2;
+            argh__out(p, err, "  ");
+            argh__out(p, err, c->name);
+            while (pad-- > 0)
+                argh__out(p, err, " ");
+            argh__out(p, err, c->help);
+            argh__out(p, err, "\n");
+        }
+    }
+
     static void argh__print_error(const argh_parser *p)
     {
         char buf[256];
@@ -936,10 +1166,16 @@ extern "C"
         argh__out(p, 1, ": ");
         argh__outn(p, 1, buf, n < sizeof(buf) ? n : sizeof(buf) - 1);
         argh__out(p, 1, "\n");
+        if (p->argh__error.code == ARGH_E_MISSING_COMMAND)
+        {
+            argh__out(p, 1, "\n");
+            argh__print_commands(p, 1, argh__level_commands(p));
+            argh__out(p, 1, "\n");
+        }
         if (argh__auto_help(p) && p->argh__error.code != ARGH_E_CONFIG)
         {
             argh__out(p, 1, "Try '");
-            argh__out(p, 1, p->argh__name);
+            argh__out_path(p, 1);
             argh__out(p, 1, " --help' for more information.\n");
         }
     }
@@ -989,6 +1225,11 @@ extern "C"
             return;
         }
         p->argh__tables[p->argh__table_count++] = table;
+    }
+
+    void argh_commands(argh_parser *p, const argh_cmd *commands)
+    {
+        p->argh__commands = commands;
     }
 
     static argh_opt *argh__add(argh_parser *p, char short_name, const char *long_name, int kind,
@@ -1111,16 +1352,22 @@ extern "C"
         if (!p->argh__name)
             p->argh__name = (argc > 0 && argv[0]) ? argh__basename(argv[0]) : "program";
 
+        p->argh__depth = 0;
         st = argh__check_config(p);
         if (st == ARGH__S_OK && argh__may_want_help(p, argc, argv))
         {
             st = argh__scan(p, argc, argv, false, &positional_count);
-            /* The dry pass may record errors it then ignores */
-            memset(&p->argh__error, 0, sizeof(p->argh__error));
-            p->argh__error.argv_index = -1;
+            if (st == ARGH__S_OK)
+            {
+                /* The dry pass records errors it then ignores */
+                memset(&p->argh__error, 0, sizeof(p->argh__error));
+                p->argh__error.argv_index = -1;
+            }
         }
         if (st == ARGH__S_OK)
             st = argh__scan(p, argc, argv, true, &positional_count);
+        if (st == ARGH__S_OK)
+            st = argh__check_path(p);
         if (st == ARGH__S_OK)
             st = argh__assign_positionals(p, argv, positional_count);
         if (st == ARGH__S_OK)
@@ -1164,6 +1411,17 @@ extern "C"
     const argh_error *argh_last_error(const argh_parser *p)
     {
         return &p->argh__error;
+    }
+
+    const argh_cmd *argh_command(const argh_parser *p)
+    {
+        return p->argh__depth ? p->argh__path[p->argh__depth - 1] : NULL;
+    }
+
+    int argh_run(argh_parser *p, void *user)
+    {
+        const argh_cmd *c = argh_command(p);
+        return (c && c->run) ? c->run(p, user) : 0;
     }
 
     /* "--name" if the option has a long name, "-x" otherwise, "<name>" for
@@ -1320,6 +1578,23 @@ extern "C"
             argh__sb_char(&b, ')');
             break;
         }
+        case ARGH_E_UNKNOWN_COMMAND:
+            argh__sb_put(&b, "unknown command '");
+            argh__sb_put(&b, e->value);
+            argh__sb_char(&b, '\'');
+            break;
+        case ARGH_E_MISSING_COMMAND:
+            if (p->argh__depth)
+            {
+                argh__sb_put(&b, "'");
+                argh__sb_put(&b, p->argh__path[p->argh__depth - 1]->name);
+                argh__sb_put(&b, "' needs a command");
+            }
+            else
+            {
+                argh__sb_put(&b, "missing command");
+            }
+            break;
         case ARGH_E_CONFIG:
             argh__sb_put(&b, "configuration error: ");
             argh__sb_put(&b, e->detail);
@@ -1496,32 +1771,47 @@ extern "C"
         char left[128];
         int column = 0;
         bool has_positionals = false;
+        bool has_globals = false;
         bool in_section = false;
         bool auto_help = argh__auto_help(p);
+        const argh_cmd *cmds = argh__level_commands(p);
+        const argh_cmd *c;
+        /* Slots from own_slot on belong to the selected command (or to the
+         * program without commands); earlier slots hold global options */
+        int own_slot = p->argh__depth ? argh__slot_count(p) - 1 : 0;
 
         /* Column width: widest visible entry, capped */
-        ARGH__EACH(p, o, index)
+        ARGH__EACH_T(p, slot, o, index)
         {
             size_t len;
             (void)index;
             if (o->kind == ARGH_K_GROUP || (o->flags & ARGH_HIDDEN))
                 continue;
+            if (slot < own_slot && !argh__is_option_kind(o->kind))
+                continue;
+            if (slot < own_slot)
+                has_globals = true;
             if (o->kind == ARGH_K_POS || o->kind == ARGH_K_REST)
                 has_positionals = true;
             len = argh__left_column(o, left, sizeof(left));
             if ((int)len > column && len <= ARGH__HELP_COLUMN_MAX)
                 column = (int)len;
         }
+        for (c = cmds; c && c->name; c++)
+            if ((int)strlen(c->name) > column && strlen(c->name) <= ARGH__HELP_COLUMN_MAX)
+                column = (int)strlen(c->name);
         if (auto_help && column < 13)
             column = 13; /* "-V, --version" */
 
         argh__out(p, 0, "Usage: ");
-        argh__out(p, 0, p->argh__name);
+        argh__out_path(p, 0);
         argh__out(p, 0, " [OPTIONS]");
-        ARGH__EACH(p, o, index)
+        if (cmds)
+            argh__out(p, 0, " <command>");
+        ARGH__EACH_T(p, slot, o, index)
         {
             (void)index;
-            if (o->kind == ARGH_K_POS || o->kind == ARGH_K_REST)
+            if (slot >= own_slot && (o->kind == ARGH_K_POS || o->kind == ARGH_K_REST))
             {
                 size_t len = argh__left_column(o, left, sizeof(left));
                 argh__out(p, 0, " ");
@@ -1530,20 +1820,24 @@ extern "C"
         }
         argh__out(p, 0, "\n");
 
-        if (p->argh__about)
         {
-            argh__out(p, 0, "\n");
-            argh__out(p, 0, p->argh__about);
-            argh__out(p, 0, "\n");
+            const char *about = p->argh__depth ? p->argh__path[p->argh__depth - 1]->help : p->argh__about;
+            if (about)
+            {
+                argh__out(p, 0, "\n");
+                argh__out(p, 0, about);
+                argh__out(p, 0, "\n");
+            }
         }
 
         if (has_positionals)
         {
             argh__out(p, 0, "\nArguments:\n");
-            ARGH__EACH(p, o, index)
+            ARGH__EACH_T(p, slot, o, index)
             {
                 (void)index;
-                if ((o->kind == ARGH_K_POS || o->kind == ARGH_K_REST) && !(o->flags & ARGH_HIDDEN))
+                if (slot >= own_slot && (o->kind == ARGH_K_POS || o->kind == ARGH_K_REST) &&
+                    !(o->flags & ARGH_HIDDEN))
                 {
                     size_t len = argh__left_column(o, left, sizeof(left));
                     argh__help_line(p, left, len, o->help, column, NULL);
@@ -1551,10 +1845,19 @@ extern "C"
             }
         }
 
-        ARGH__EACH(p, o, index)
+        if (cmds)
+        {
+            argh__out(p, 0, "\nCommands:\n");
+            for (c = cmds; c->name; c++)
+                argh__help_line(p, c->name, strlen(c->name), c->help, column, NULL);
+        }
+
+        ARGH__EACH_T(p, slot, o, index)
         {
             size_t len;
             (void)index;
+            if (slot < own_slot)
+                continue;
             if (o->kind == ARGH_K_GROUP)
             {
                 argh__out(p, 0, "\n");
@@ -1572,6 +1875,22 @@ extern "C"
             }
             len = argh__left_column(o, left, sizeof(left));
             argh__help_line(p, left, len, o->help, column, o);
+        }
+
+        /* Options of the program and of parent commands, without group headings */
+        if (has_globals)
+        {
+            argh__out(p, 0, "\nGlobal options:\n");
+            ARGH__EACH_T(p, slot, o, index)
+            {
+                size_t len;
+                (void)index;
+                if (slot >= own_slot || !argh__is_option_kind(o->kind) || (o->flags & ARGH_HIDDEN))
+                    continue;
+                len = argh__left_column(o, left, sizeof(left));
+                argh__help_line(p, left, len, o->help, column, o);
+            }
+            in_section = true;
         }
 
         if (auto_help)

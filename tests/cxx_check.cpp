@@ -16,12 +16,27 @@ static const argh_opt opts[] = {
     ARGH_END,
 };
 
+static int run_build(argh_parser *, void *) { return 0; }
+
+static const argh_cmd sub_cmds[] = {
+    ARGH_CMD("add", "Add", nullptr),
+    ARGH_CMD_END,
+};
+
+static const argh_cmd cmds[] = {
+    ARGH_CMD("build", "Build", opts, run_build),
+    ARGH_CMD_GROUP("remote", "Remotes", sub_cmds),
+    ARGH_CMD_END,
+};
+
 int main(int argc, char **argv)
 {
     double ratio = 1.0;
     argh_parser p;
     argh_init(&p, "cxx", nullptr);
-    argh_table(&p, opts);
     argh_required(argh_double(&p, 'r', "ratio", &ratio, "Ratio"));
-    return argh_parse(&p, argc, argv) ? 0 : argh_exit_code(&p);
+    argh_commands(&p, cmds);
+    if (!argh_parse(&p, argc, argv))
+        return argh_exit_code(&p);
+    return argh_run(&p, nullptr);
 }

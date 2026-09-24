@@ -1089,6 +1089,345 @@ TEST(test_parse_twice_resets_state)
     ASSERT_TRUE(argh_given(&p, &verbose));
 }
 
+/* ============================================================================
+ * Commands
+ * ============================================================================ */
+
+static bool c_verbose;
+static bool c_release;
+static bool c_force;
+static const char *c_name;
+static const char *c_url;
+static argh_values c_args;
+static int c_handler_calls;
+
+static int c_run_build(argh_parser *p, void *user)
+{
+    (void)p;
+    c_handler_calls++;
+    return *(int *)user;
+}
+
+static const argh_opt c_build_opts[] = {
+    ARGH_FLAG('r', "release", &c_release, "Optimized build"),
+    ARGH_END,
+};
+
+static const argh_opt c_add_opts[] = {
+    ARGH_FLAG('f', "force", &c_force, "Overwrite an existing remote"),
+    ARGH_POS("name", &c_name, "Remote name"),
+    ARGH_POS("url", &c_url, "Remote URL"),
+    ARGH_END,
+};
+
+static const argh_opt c_exec_opts[] = {
+    ARGH_REST("args", &c_args, "Arguments to pass on"),
+    ARGH_END,
+};
+
+static const argh_cmd c_remote_cmds[] = {
+    ARGH_CMD("add", "Add a remote", c_add_opts),
+    ARGH_CMD("remove", "Remove a remote", NULL),
+    ARGH_CMD_END,
+};
+
+static const argh_cmd c_cmds[] = {
+    ARGH_CMD("build", "Build the project", c_build_opts, c_run_build),
+    ARGH_CMD("exec", "Run a program", c_exec_opts),
+    ARGH_CMD_GROUP("remote", "Manage remotes", c_remote_cmds),
+    ARGH_CMD_END,
+};
+
+static void setup_commands(argh_parser *p)
+{
+    c_verbose = c_release = c_force = false;
+    c_name = c_url = NULL;
+    memset(&c_args, 0, sizeof(c_args));
+    c_handler_calls = 0;
+    argh_init(p, "tool", "Example tool");
+    argh_set_writer(p, capture, NULL);
+    argh_flag(p, 'v', "verbose", &c_verbose, "Verbose output");
+    argh_commands(p, c_cmds);
+}
+
+TEST(test_command_dispatch)
+{
+    ARGV("build", "--release");
+    int result = 7;
+    argh_parser p;
+    setup_commands(&p);
+
+    ASSERT_TRUE(argh_parse(&p, argc, argv));
+    ASSERT_TRUE(argh_command(&p) == &c_cmds[0]);
+    ASSERT_TRUE(c_release);
+    ASSERT_EQ(argh_run(&p, &result), 7);
+    ASSERT_EQ(c_handler_calls, 1);
+}
+
+TEST(test_command_global_option_before_and_after)
+{
+    char *before[] = {(char *)"tool", (char *)"-v", (char *)"build", NULL};
+    char *after[] = {(char *)"tool", (char *)"build", (char *)"-v", NULL};
+    argh_parser p;
+
+    setup_commands(&p);
+    ASSERT_TRUE(argh_parse(&p, 3, before));
+    ASSERT_TRUE(c_verbose);
+
+    setup_commands(&p);
+    ASSERT_TRUE(argh_parse(&p, 3, after));
+    ASSERT_TRUE(c_verbose);
+    ASSERT_TRUE(argh_given(&p, &c_verbose));
+}
+
+TEST(test_command_option_before_command_is_unknown)
+{
+    ARGV("--release", "build");
+    argh_parser p;
+    setup_commands(&p);
+
+    ASSERT_FALSE(argh_parse(&p, argc, argv));
+    ASSERT_STR_EQ(error_text(&p), "unknown option '--release'");
+}
+
+TEST(test_command_options_of_other_commands_are_unknown)
+{
+    ARGV("build", "--force");
+    argh_parser p;
+    setup_commands(&p);
+
+    ASSERT_FALSE(argh_parse(&p, argc, argv));
+    ASSERT_EQ(argh_last_error(&p)->code, ARGH_E_UNKNOWN_OPTION);
+    ASSERT_FALSE(argh_given(&p, &c_force));
+}
+
+TEST(test_command_nested)
+{
+    ARGV("remote", "add", "-f", "origin", "https://example.com/repo.git");
+    argh_parser p;
+    setup_commands(&p);
+
+    ASSERT_TRUE(argh_parse(&p, argc, argv));
+    ASSERT_TRUE(argh_command(&p) == &c_remote_cmds[0]);
+    ASSERT_TRUE(c_force);
+    ASSERT_STR_EQ(c_name, "origin");
+    ASSERT_STR_EQ(c_url, "https://example.com/repo.git");
+    ASSERT_EQ(argh_run(&p, NULL), 0); /* no handler */
+}
+
+TEST(test_command_without_options)
+{
+    ARGV("remote", "remove");
+    argh_parser p;
+    setup_commands(&p);
+
+    ASSERT_TRUE(argh_parse(&p, argc, argv));
+    ASSERT_TRUE(argh_command(&p) == &c_remote_cmds[1]);
+}
+
+TEST(test_command_rest_and_double_dash)
+{
+    ARGV("exec", "-v", "--", "ls", "-la");
+    argh_parser p;
+    setup_commands(&p);
+
+    ASSERT_TRUE(argh_parse(&p, argc, argv));
+    ASSERT_TRUE(c_verbose);
+    ASSERT_EQ(c_args.count, 2);
+    ASSERT_STR_EQ(c_args.items[0], "ls");
+    ASSERT_STR_EQ(c_args.items[1], "-la");
+}
+
+TEST(test_command_unknown)
+{
+    ARGV("biuld");
+    argh_parser p;
+    setup_commands(&p);
+
+    ASSERT_FALSE(argh_parse(&p, argc, argv));
+    ASSERT_EQ(argh_exit_code(&p), 2);
+    ASSERT_STR_EQ(error_text(&p), "unknown command 'biuld'");
+    ASSERT_STR_EQ(err_text, "tool: unknown command 'biuld'\nTry 'tool --help' for more information.\n");
+}
+
+TEST(test_command_missing)
+{
+    ARGV("-v");
+    argh_parser p;
+    setup_commands(&p);
+
+    ASSERT_FALSE(argh_parse(&p, argc, argv));
+    ASSERT_EQ(argh_exit_code(&p), 2);
+    ASSERT_EQ(out_len, 0u); /* nothing on stdout: the run failed */
+    ASSERT_STR_EQ(err_text,
+                  "tool: missing command\n"
+                  "\n"
+                  "Commands:\n"
+                  "  build   Build the project\n"
+                  "  exec    Run a program\n"
+                  "  remote  Manage remotes\n"
+                  "\n"
+                  "Try 'tool --help' for more information.\n");
+}
+
+TEST(test_command_missing_nested)
+{
+    ARGV("remote");
+    argh_parser p;
+    setup_commands(&p);
+
+    ASSERT_FALSE(argh_parse(&p, argc, argv));
+    ASSERT_STR_EQ(err_text,
+                  "tool: 'remote' needs a command\n"
+                  "\n"
+                  "Commands:\n"
+                  "  add     Add a remote\n"
+                  "  remove  Remove a remote\n"
+                  "\n"
+                  "Try 'tool remote --help' for more information.\n");
+}
+
+TEST(test_command_help_root)
+{
+    ARGV("--help");
+    argh_parser p;
+    setup_commands(&p);
+
+    ASSERT_FALSE(argh_parse(&p, argc, argv));
+    ASSERT_EQ(argh_exit_code(&p), 0);
+    ASSERT_STR_EQ(out_text,
+                  "Usage: tool [OPTIONS] <command>\n"
+                  "\n"
+                  "Example tool\n"
+                  "\n"
+                  "Commands:\n"
+                  "  build          Build the project\n"
+                  "  exec           Run a program\n"
+                  "  remote         Manage remotes\n"
+                  "\n"
+                  "Options:\n"
+                  "  -v, --verbose  Verbose output\n"
+                  "\n"
+                  "  -h, --help     Print help\n");
+}
+
+static const char *const expected_add_help =
+    "Usage: tool remote add [OPTIONS] <name> <url>\n"
+    "\n"
+    "Add a remote\n"
+    "\n"
+    "Arguments:\n"
+    "  <name>         Remote name\n"
+    "  <url>          Remote URL\n"
+    "\n"
+    "Options:\n"
+    "  -f, --force    Overwrite an existing remote\n"
+    "\n"
+    "Global options:\n"
+    "  -v, --verbose  Verbose output\n"
+    "\n"
+    "  -h, --help     Print help\n";
+
+TEST(test_command_help_leaf)
+{
+    ARGV("remote", "add", "--help");
+    argh_parser p;
+    setup_commands(&p);
+
+    ASSERT_FALSE(argh_parse(&p, argc, argv));
+    ASSERT_EQ(argh_exit_code(&p), 0);
+    if (strcmp(out_text, expected_add_help) != 0)
+        printf("--- got ---\n%s--- expected ---\n%s", out_text, expected_add_help);
+    ASSERT_STR_EQ(out_text, expected_add_help);
+}
+
+TEST(test_command_help_subcommand)
+{
+    ARGV("help", "remote", "add");
+    argh_parser p;
+    setup_commands(&p);
+
+    ASSERT_FALSE(argh_parse(&p, argc, argv));
+    ASSERT_EQ(argh_exit_code(&p), 0);
+    ASSERT_STR_EQ(out_text, expected_add_help);
+}
+
+TEST(test_command_help_group)
+{
+    ARGV("remote", "-h");
+    argh_parser p;
+    setup_commands(&p);
+
+    ASSERT_FALSE(argh_parse(&p, argc, argv));
+    ASSERT_TRUE(strncmp(out_text, "Usage: tool remote [OPTIONS] <command>\n", 39) == 0);
+    ASSERT_TRUE(strstr(out_text, "Commands:\n  add ") != NULL);
+    ASSERT_TRUE(strstr(out_text, "Global options:\n  -v, --verbose") != NULL);
+}
+
+TEST(test_command_help_unknown)
+{
+    ARGV("help", "nope");
+    argh_parser p;
+    setup_commands(&p);
+
+    ASSERT_FALSE(argh_parse(&p, argc, argv));
+    ASSERT_EQ(argh_exit_code(&p), 2);
+    ASSERT_STR_EQ(error_text(&p), "unknown command 'nope'");
+}
+
+TEST(test_command_config_root_positional)
+{
+    ARGV("build");
+    const char *file = NULL;
+    argh_parser p;
+    setup_commands(&p);
+    argh_pos(&p, "file", &file, "");
+
+    ASSERT_FALSE(argh_parse(&p, argc, argv));
+    ASSERT_EQ(argh_last_error(&p)->code, ARGH_E_CONFIG);
+}
+
+TEST(test_command_config_reserved_help)
+{
+    static const argh_cmd cmds[] = {ARGH_CMD("help", "Mine", NULL), ARGH_CMD_END};
+    ARGV("help");
+    argh_parser p;
+    setup(&p);
+    argh_commands(&p, cmds);
+
+    ASSERT_FALSE(argh_parse(&p, argc, argv));
+    ASSERT_STR_EQ(error_text(&p), "configuration error: command name 'help' is reserved, see ARGH_NO_AUTO_HELP");
+}
+
+TEST(test_command_config_duplicate_with_global)
+{
+    static bool clash;
+    static const argh_opt opts[] = {ARGH_FLAG('v', "verbose", &clash, ""), ARGH_END};
+    static const argh_cmd cmds[] = {ARGH_CMD("run", "", opts), ARGH_CMD_END};
+    ARGV("run");
+    bool verbose = false;
+    argh_parser p;
+    setup(&p);
+    argh_flag(&p, 'v', "verbose", &verbose, "");
+    argh_commands(&p, cmds);
+
+    ASSERT_FALSE(argh_parse(&p, argc, argv));
+    ASSERT_STR_EQ(error_text(&p), "configuration error: option defined twice (--verbose)");
+}
+
+TEST(test_command_posix_mode_at_leaf)
+{
+    ARGV("exec", "ls", "-v");
+    argh_parser p;
+    setup_commands(&p);
+    argh_set_flags(&p, ARGH_POSIX);
+
+    ASSERT_TRUE(argh_parse(&p, argc, argv));
+    ASSERT_FALSE(c_verbose);
+    ASSERT_EQ(c_args.count, 2);
+    ASSERT_STR_EQ(c_args.items[1], "-v");
+}
+
 TEST(test_parser_size)
 {
     /* Budget from the design: the core stays small, the builder is extra */
@@ -1174,6 +1513,25 @@ int main(void)
     RUN_TEST(test_given);
     RUN_TEST(test_empty_argv);
     RUN_TEST(test_parse_twice_resets_state);
+    RUN_TEST(test_command_dispatch);
+    RUN_TEST(test_command_global_option_before_and_after);
+    RUN_TEST(test_command_option_before_command_is_unknown);
+    RUN_TEST(test_command_options_of_other_commands_are_unknown);
+    RUN_TEST(test_command_nested);
+    RUN_TEST(test_command_without_options);
+    RUN_TEST(test_command_rest_and_double_dash);
+    RUN_TEST(test_command_unknown);
+    RUN_TEST(test_command_missing);
+    RUN_TEST(test_command_missing_nested);
+    RUN_TEST(test_command_help_root);
+    RUN_TEST(test_command_help_leaf);
+    RUN_TEST(test_command_help_subcommand);
+    RUN_TEST(test_command_help_group);
+    RUN_TEST(test_command_help_unknown);
+    RUN_TEST(test_command_config_root_positional);
+    RUN_TEST(test_command_config_reserved_help);
+    RUN_TEST(test_command_config_duplicate_with_global);
+    RUN_TEST(test_command_posix_mode_at_leaf);
     RUN_TEST(test_parser_size);
 
     printf("\nRun: %d\nPassed: %d\nFailed: %d\n", tests_run, tests_passed, tests_failed);

@@ -167,6 +167,101 @@ argh_table(&p, options);
 - `argh_table` can be called several times, so each module of a program can define its own options. Tables and builder calls can be mixed.
 - `ARGH_GROUP` starts a new section in the help output.
 
+### Commands
+
+Tools like `git` or `docker` group their work into commands: `tool build`, `tool remote add`. Describe them as a table, each with its own options:
+
+```c
+static bool verbose, release, force;
+static const char *name, *url;
+
+static int build(argh_parser *p, void *app)
+{
+    printf("building%s\n", release ? " (release)" : "");
+    return 0;
+}
+
+static const argh_opt build_opts[] = {
+    ARGH_FLAG('r', "release", &release, "Optimized build"),
+    ARGH_END
+};
+
+static const argh_opt add_opts[] = {
+    ARGH_FLAG('f', "force", &force, "Overwrite an existing remote"),
+    ARGH_POS("name", &name, "Remote name"),
+    ARGH_POS("url", &url, "Remote URL"),
+    ARGH_END
+};
+
+static const argh_cmd remote_cmds[] = {
+    ARGH_CMD("add", "Add a remote", add_opts),
+    ARGH_CMD("list", "List remotes", NULL),
+    ARGH_CMD_END
+};
+
+static const argh_cmd commands[] = {
+    ARGH_CMD("build", "Build the project", build_opts, build),
+    ARGH_CMD_GROUP("remote", "Manage remotes", remote_cmds),
+    ARGH_CMD_END
+};
+
+int main(int argc, char **argv)
+{
+    argh_parser p;
+    argh_init(&p, "tool", "Builds things");
+    argh_flag(&p, 'v', "verbose", &verbose, "Verbose output");   /* a global option */
+    argh_commands(&p, commands);
+
+    if (!argh_parse(&p, argc, argv))
+        return argh_exit_code(&p);
+
+    if (argh_command(&p) == &remote_cmds[0])
+        printf("adding %s -> %s\n", name, url);
+    return argh_run(&p, NULL);   /* calls the handler of the selected command, if any */
+}
+```
+
+- `ARGH_CMD(name, help, options[, handler])`: the handler is optional. Pass `NULL` for a command without options.
+- `ARGH_CMD_GROUP(name, help, subcommands)`: a command that only holds other commands, like `remote`.
+- Options added to the parser itself are **global**: they work before and after the command name (`tool -v build` and `tool build -v`). A command's own options only work after its name.
+- Dispatch either way: `argh_run(&p, app)` calls the handler and passes `app` through, or `argh_command(&p)` returns the selected command for your own `switch`.
+
+Every level gets its own help, and `tool help remote add` works like `tool remote add --help`:
+
+```console
+$ ./tool remote add --help
+Usage: tool remote add [OPTIONS] <name> <url>
+
+Add a remote
+
+Arguments:
+  <name>         Remote name
+  <url>          Remote URL
+
+Options:
+  -f, --force    Overwrite an existing remote
+
+Global options:
+  -v, --verbose  Verbose output
+
+  -h, --help     Print help
+```
+
+When a command is missing, the error lists what's available:
+
+```console
+$ ./tool remote
+tool: 'remote' needs a command
+
+Commands:
+  add   Add a remote
+  list  List remotes
+
+Try 'tool remote --help' for more information.
+```
+
+Command names match exactly, like options. A program with commands can't have positional arguments of its own, and neither can a command group: positionals belong to the commands that do the work.
+
 ### Help and version
 
 `-h`/`--help` always works. `-V`/`--version` works once you set a version:
@@ -231,10 +326,11 @@ Define before including `argh.h`:
 | Macro              | Default | Meaning                                                        |
 | ------------------ | ------: | -------------------------------------------------------------- |
 | `ARGH_BUILDER_CAP` |      32 | Options that builder calls can add. `0` if you only use tables |
-| `ARGH_MAX_OPTS`    |      64 | Options per parser, all tables combined                        |
+| `ARGH_MAX_OPTS`    |      64 | Options on the active command path, all tables combined        |
 | `ARGH_MAX_TABLES`  |       8 | Tables per parser. The builder counts as one                   |
+| `ARGH_MAX_DEPTH`   |       4 | Levels of nested commands                                      |
 
-Mistakes in the definitions, such as two options with the same name or a missing variable, are reported by `argh_parse` as `ARGH_E_CONFIG`. The duplicate-name check runs in builds without `NDEBUG`.
+Mistakes in the definitions, such as two options with the same name or a missing variable, are reported by `argh_parse` as `ARGH_E_CONFIG`. The checks for duplicate names and for the command tree run in builds without `NDEBUG`.
 
 ## API reference
 
@@ -245,6 +341,7 @@ void argh_version(argh_parser *p, const char *version);
 void argh_set_flags(argh_parser *p, unsigned flags);                   /* ARGH_POSIX, ARGH_NO_AUTO_HELP */
 void argh_set_writer(argh_parser *p, argh_write_fn write, void *ctx);
 void argh_table(argh_parser *p, const argh_opt *table);
+void argh_commands(argh_parser *p, const argh_cmd *commands);
 
 /* Builder: each returns the option, or NULL when ARGH_BUILDER_CAP is exceeded */
 argh_opt *argh_flag  (argh_parser *p, char s, const char *l, bool *target, const char *help);
@@ -271,6 +368,8 @@ argh_opt *argh_metavar(argh_opt *o, const char *metavar);   /* "<file>" instead 
 bool argh_parse(argh_parser *p, int argc, char **argv);
 int argh_exit_code(const argh_parser *p);                    /* 0, or 2 after an error */
 bool argh_given(const argh_parser *p, const void *target);
+const argh_cmd *argh_command(const argh_parser *p);         /* selected command, or NULL */
+int argh_run(argh_parser *p, void *user);                     /* calls its handler */
 const argh_error *argh_last_error(const argh_parser *p);
 size_t argh_format_error(const argh_parser *p, char *buf, size_t size);
 void argh_print_help(const argh_parser *p);
@@ -314,8 +413,7 @@ if (!argh_parse(&p, argc, argv)) return argh_exit_code(&p);
 
 Planned for upcoming versions:
 
-- **Subcommands** (`git remote add ...`) arrive in v0.3.
-- **Custom value types** through a callback arrive in v0.3.
+- **Custom value types** through a callback, "did you mean" suggestions and constraints between options arrive in v0.3.
 - **A reduced build for microcontrollers** (no stdio, no help text) arrives in v0.4. Today argh adds about 12 KB of code and text on Linux.
 - Floating-point values follow the C locale's decimal separator, like `strtod`.
 
