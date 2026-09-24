@@ -1,60 +1,79 @@
-# argh.h - Fast Argument Parsing Library for C
+# argh.h
 
-A high-performance, single-header, cross-platform argument parsing library written in pure C.
+[![CI](https://github.com/ilyabrin/argh/actions/workflows/ci.yml/badge.svg)](https://github.com/ilyabrin/argh/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
+A single-header command-line argument parser for C. Copy one file, add two lines, parse your arguments.
+
+> **Status: early development (v0.1.0).** It works and is tested, but the API will change before v1.0.
+> Pin a specific version if you use it today, and feedback on the API is very welcome.
 
 ## Features
 
-- **Single Header**: Just copy `argh.h` to your project
-- **Pure C**: No C++ dependencies, works with C99 and later
-- **Cross-Platform**: Works on Windows, Linux, macOS, and embedded systems
-- **High Performance**: Minimal allocations, optimized for speed
-- **Type-Safe**: Support for bool, int, float, double, and string types
-- **Flexible**: Short (`-v`) and long (`--verbose`) options
-- **User-Friendly**: Automatic help generation and clear error messages
+- **One file.** Copy `argh.h` into your project. No build system changes, no dependencies.
+- **Plain C99.** Only the C standard library. Tested with GCC, Clang and MSVC on Linux, macOS and Windows.
+- **Typed values.** `bool`, `int`, `float`, `double` and strings, with validation and range checks.
+- **Familiar syntax.** `-v`, `--verbose`, `--out file`, `--out=file`, `-abc`, and `--` to end options.
+- **Help and errors out of the box.** Generated `--help` text and readable error messages.
 
 ## Quick Start
 
+Copy `argh.h` next to your code, then:
+
 ```c
+#include <stdio.h>
+
 #define ARGH_IMPLEMENTATION
 #include "argh.h"
 
-int main(int argc, char** argv) {
+int main(int argc, char **argv) {
     argh_Parser parser;
     argh_init(&parser, argc, argv);
 
-    /* Define options */
-    argh_add(&parser, "v", "verbose", ARGH_BOOL, NULL, "Enable verbose output");
-    argh_add(&parser, "o", "output", ARGH_STRING, "out.txt", "Output file");
-    argh_add(&parser, "n", "count", ARGH_INT, "10", "Number of iterations");
-    argh_require(&parser, "output");  /* Make --output required */
+    /* 1. Describe your options */
+    argh_add(&parser, "h", "help",    ARGH_BOOL,   NULL,      "Show this help");
+    argh_add(&parser, "v", "verbose", ARGH_BOOL,   NULL,      "Enable verbose output");
+    argh_add(&parser, "o", "output",  ARGH_STRING, "out.txt", "Output file");
+    argh_add(&parser, "n", "count",   ARGH_INT,    "10",      "Number of iterations");
 
-    /* Parse arguments */
-    if (!argh_parse(&parser)) {
-        argh_print_error(&parser);
+    /* 2. Parse */
+    bool ok = argh_parse(&parser);
+    if (parser.help_requested) {
         argh_print_help(&parser);
+        argh_free(&parser);
+        return 0;
+    }
+    if (!ok) {
+        argh_print_error(&parser);
+        argh_free(&parser);
         return 1;
     }
 
-    /* Check for help request */
-    if (parser.help_requested) {
-        argh_print_help(&parser);
-        return 0;
-    }
+    /* 3. Read values */
+    bool verbose       = argh_get_bool(&parser, "verbose");
+    const char *output = argh_get_string(&parser, "output");
+    int count          = argh_get_int(&parser, "count");
 
-    /* Get values */
-    bool verbose = argh_get_bool(&parser, "verbose");
-    const char* output = argh_get_string(&parser, "output");
-    int count = argh_get_int(&parser, "count");
-
-    /* Get positional arguments */
-    for (size_t i = 0; i < parser.positional_count; i++) {
-        printf("File: %s\n", parser.positional[i]);
-    }
+    printf("verbose=%d output=%s count=%d\n", verbose, output, count);
+    for (size_t i = 0; i < parser.positional_count; i++)
+        printf("file: %s\n", parser.positional[i]);
 
     argh_free(&parser);
     return 0;
 }
 ```
+
+```console
+$ ./tool -v -n 3 --output=log.txt a.txt b.txt
+verbose=1 output=log.txt count=3
+file: a.txt
+file: b.txt
+
+$ ./tool -n abc
+Error: count: Invalid value
+```
+
+`#define ARGH_IMPLEMENTATION` must appear in exactly one `.c` file. Other files just `#include "argh.h"`.
 
 ## API Reference
 
@@ -137,7 +156,6 @@ const char* argh_error_string(argh_ErrorCode code);
 
 ```c
 void argh_print_help(argh_Parser* parser);
-void argh_set_help_width(argh_Parser* parser, int width);
 ```
 
 ## Usage Examples
@@ -231,7 +249,23 @@ Define these macros before including the header to customize limits:
 | `ARGH_ERR_INVALID_VALUE`       | Value format invalid          |
 | `ARGH_ERR_REQUIRED_MISSING`    | Required option not provided  |
 | `ARGH_ERR_TOO_MANY_POSITIONAL` | Too many positional arguments |
+| `ARGH_ERR_INTERNAL`            | Memory allocation failed      |
+
+## Known limitations
+
+These are planned for upcoming versions:
+
+- No attached values for short options: use `-o file`, not `-ofile`.
+- `--help` is not added automatically. Define a `help` option yourself and check `parser.help_requested`.
+- Repeating an option keeps only the last value.
+- Limits are fixed at compile time (see [Configuration](#configuration)).
+
+## Running the tests
+
+```sh
+make test
+```
 
 ## License
 
-MIT License - Free for personal and commercial use.
+[MIT](LICENSE)
