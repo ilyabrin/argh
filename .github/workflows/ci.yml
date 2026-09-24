@@ -33,11 +33,11 @@ jobs:
           make CC=clang test
           CFLAGS="-std=c99 -Wall -Wextra -Wpedantic -Werror -O1 -g
           -fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=all"
-      - name: Reduced build (ARGH_NO_COMMANDS, ARGH_NO_SUGGEST)
+      - name: Reduced release build (ARGH_NO_COMMANDS, ARGH_NO_SUGGEST, NDEBUG)
         run: >
           make clean && make CC=clang test
           CFLAGS="-std=c99 -Wall -Wextra -Wpedantic -Werror -O1 -g
-          -DARGH_NO_COMMANDS -DARGH_NO_SUGGEST
+          -DARGH_NO_COMMANDS -DARGH_NO_SUGGEST -DNDEBUG
           -fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=all"
 
   mingw:

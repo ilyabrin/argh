@@ -14,6 +14,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - A missing command is an error that lists the available commands.
 - "Did you mean" suggestions for mistyped long options and commands: `unknown option '--verbsoe' (did you mean '--verbose'?)`. Also available as `argh_error.suggestion`. `ARGH_NO_SUGGEST` removes them.
 - **Your own value types**: describe a type once as a constant `argh_type` (value name, parse function, optional format function) and use it with `argh_custom` / `ARGH_CUSTOM`. The parse function's reason appears in the error message, and the format function lets help show the default.
+- **Rules between options**, referring to variables: `ARGH_AT_MOST_ONE`, `ARGH_EXACTLY_ONE`, `ARGH_AT_LEAST_ONE`, `ARGH_REQUIRES`, set with `argh_rules`. Errors like `options '--json' and '--csv' cannot be used together`. Programs that don't call `argh_rules` don't link the rule checker.
+- **Validators** for anything rules can't express: `argh_set_validator` and `argh_fail(p, "message")`.
 - `ARGH_NO_COMMANDS` removes command support, so programs without commands keep the code size of v0.2.
 
 ## [0.2.0] - 2026-09-24

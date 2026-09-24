@@ -27,6 +27,14 @@ static const argh_opt opts[] = {
 
 static int run_build(argh_parser *, void *) { return 0; }
 
+static const argh_rule rules[] = {
+    ARGH_AT_MOST_ONE(&verbose, &level),
+    ARGH_REQUIRES(&output, &jobs),
+    ARGH_RULES_END,
+};
+
+static bool validate(argh_parser *p, void *) { return jobs > 0 || argh_fail(p, "jobs must be positive"); }
+
 static const argh_cmd sub_cmds[] = {
     ARGH_CMD("add", "Add", nullptr),
     ARGH_CMD_END,
@@ -45,6 +53,8 @@ int main(int argc, char **argv)
     argh_init(&p, "cxx", nullptr);
     argh_required(argh_double(&p, 'r', "ratio", &ratio, "Ratio"));
     argh_commands(&p, cmds);
+    argh_rules(&p, rules);
+    argh_set_validator(&p, validate, nullptr);
     if (!argh_parse(&p, argc, argv))
         return argh_exit_code(&p);
     return argh_run(&p, nullptr);
