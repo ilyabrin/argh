@@ -21,6 +21,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - run: make CC=${{ matrix.cc }} all test
+      - run: make CC=${{ matrix.cc }} bench
 
   sanitizers:
     name: ubuntu / clang / ASan + UBSan
@@ -38,6 +39,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - run: make all test
+      - run: make bench
 
   msvc:
     name: windows / msvc

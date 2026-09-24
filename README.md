@@ -266,6 +266,10 @@ These are planned for upcoming versions:
 make test
 ```
 
+## Benchmarks
+
+Speed, memory and code size compared with `getopt_long`, with the method and caveats: [BENCHMARKS.md](BENCHMARKS.md). Run them with `make bench`.
+
 ## License
 
 [MIT](LICENSE)
