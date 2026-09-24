@@ -6,6 +6,13 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+### Added
+
+- **Commands**, like `git remote add`: `argh_commands` with `ARGH_CMD` and `ARGH_CMD_GROUP` tables, nested up to `ARGH_MAX_DEPTH` levels. Options of the parser are global and work before and after the command name.
+- `argh_command` returns the selected command, `argh_run` calls its handler.
+- Help for every command level, with a `Global options` section, and `tool help <command>`.
+- A missing command is an error that lists the available commands.
+
 ## [0.2.0] - 2026-09-24
 
 v0.2 replaces the API. See [Upgrading from 0.1](README.md#upgrading-from-01).
