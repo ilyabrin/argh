@@ -19,14 +19,14 @@ jobs:
           - os: macos-latest
             cc: gcc
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: make CC=${{ matrix.cc }} all test
 
   sanitizers:
     name: ubuntu / clang / ASan + UBSan
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: >
           make CC=clang test
           CFLAGS="-std=c99 -Wall -Wextra -Wpedantic -Werror -O1 -g
@@ -36,14 +36,14 @@ jobs:
     name: windows / mingw gcc
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: make all test
 
   msvc:
     name: windows / msvc
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: ilammy/msvc-dev-cmd@v1
       - name: Build and run tests
         shell: cmd
