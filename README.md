@@ -187,6 +187,57 @@ if (argh_given(&p, &jobs))
     printf("jobs set explicitly\n");
 ```
 
+### Rules between options
+
+Some options only make sense together, or not at all together. Say so in a table that refers to your variables, and argh checks it and explains the problem:
+
+```c
+static const argh_rule rules[] = {
+    ARGH_AT_MOST_ONE(&json, &yaml, &csv),    /* one output format */
+    ARGH_EXACTLY_ONE(&input, &use_stdin),    /* one input source */
+    ARGH_REQUIRES(&tls_key, &tls_cert),      /* a key needs its certificate */
+    ARGH_RULES_END
+};
+
+argh_rules(&p, rules);
+```
+
+```console
+$ ./export --json --csv --stdin
+export: options '--json' and '--csv' cannot be used together
+$ ./export --yaml
+export: one of '--input' or '--stdin' is required
+$ ./export --stdin --tls-key k.pem
+export: option '--tls-key' requires '--tls-cert'
+```
+
+| Rule                              | Meaning                                  |
+| --------------------------------- | ---------------------------------------- |
+| `ARGH_AT_MOST_ONE(&a, &b, ...)`   | no two of them together                  |
+| `ARGH_EXACTLY_ONE(&a, &b, ...)`   | one of them, and only one                |
+| `ARGH_AT_LEAST_ONE(&a, &b, ...)`  | one of them or more                      |
+| `ARGH_REQUIRES(&a, &b, ...)`      | if `a` is given, all the others must be  |
+
+A rule takes 2 to 4 variables. Because rules refer to variables rather than names, a typo is a compile error. With commands, a rule only applies when all its options are active, so rules for different commands can share one table.
+
+For anything else, add a validator. It runs after every other check has passed:
+
+```c
+static bool check_sizes(argh_parser *p, void *ctx)
+{
+    if (min_size > max_size)
+        return argh_fail(p, "--min-size must not be greater than --max-size");
+    return true;
+}
+
+argh_set_validator(&p, check_sizes, NULL);
+```
+
+```console
+$ ./export --stdin --min-size 50 --max-size 10
+export: --min-size must not be greater than --max-size
+```
+
 ### Option tables
 
 For larger tools, or to keep the definitions in read-only memory, describe options as data. It's the same parser underneath.
@@ -404,6 +455,9 @@ void argh_set_flags(argh_parser *p, unsigned flags);                   /* ARGH_P
 void argh_set_writer(argh_parser *p, argh_write_fn write, void *ctx);
 void argh_table(argh_parser *p, const argh_opt *table);
 void argh_commands(argh_parser *p, const argh_cmd *commands);
+void argh_rules(argh_parser *p, const argh_rule *rules);
+void argh_set_validator(argh_parser *p, argh_validate_fn fn, void *ctx);
+bool argh_fail(argh_parser *p, const char *message);                   /* inside a validator */
 
 /* Builder: each returns the option, or NULL when ARGH_BUILDER_CAP is exceeded */
 argh_opt *argh_flag  (argh_parser *p, char s, const char *l, bool *target, const char *help);
@@ -476,8 +530,7 @@ if (!argh_parse(&p, argc, argv)) return argh_exit_code(&p);
 
 Planned for upcoming versions:
 
-- **Constraints between options** (mutually exclusive, required together) arrive in v0.3.
-- **A reduced build for microcontrollers** (no stdio, no help text) arrives in v0.4. Today argh adds about 12 KB of code and text on Linux.
+- **A reduced build for microcontrollers** (no stdio, no help text) arrives in v0.4. Today argh adds 14 to 18 KB of code and text on Linux, depending on the features you keep (see [Configuration](#configuration)).
 - Floating-point values follow the C locale's decimal separator, like `strtod`.
 
 ## Benchmarks

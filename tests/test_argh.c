@@ -789,6 +789,8 @@ TEST(test_config_no_auto_help_frees_h)
     ASSERT_STR_EQ(host, "example.com");
 }
 
+/* Definition checks run only without NDEBUG */
+#ifndef NDEBUG
 TEST(test_config_duplicate)
 {
     ARGV0();
@@ -801,6 +803,7 @@ TEST(test_config_duplicate)
     ASSERT_FALSE(argh_parse(&p, argc, argv));
     ASSERT_STR_EQ(error_text(&p), "configuration error: option defined twice (--verbose)");
 }
+#endif
 
 TEST(test_config_builder_overflow)
 {
@@ -1269,6 +1272,273 @@ TEST(test_custom_config_without_type)
                   "configuration error: custom option has no argh_type with a parse function (--max-size)");
 }
 
+/* ============================================================================
+ * Rules and validators
+ * ============================================================================ */
+
+static bool r_json, r_yaml, r_csv, r_stdin, r_all;
+static const char *r_input, *r_key, *r_cert, *r_package;
+
+static const argh_rule r_rules[] = {
+    ARGH_AT_MOST_ONE(&r_json, &r_yaml, &r_csv),
+    ARGH_EXACTLY_ONE(&r_input, &r_stdin),
+    ARGH_REQUIRES(&r_key, &r_cert),
+    ARGH_RULES_END,
+};
+
+/* An export tool: one output format, one input source, TLS key needs a cert */
+static argh_err parse_with_rules(int argc, char **argv, argh_parser *p)
+{
+    r_json = r_yaml = r_csv = r_stdin = false;
+    r_input = r_key = r_cert = NULL;
+    setup(p);
+    argh_flag(p, 0, "json", &r_json, "");
+    argh_flag(p, 0, "yaml", &r_yaml, "");
+    argh_flag(p, 0, "csv", &r_csv, "");
+    argh_string(p, 'i', "input", &r_input, "");
+    argh_flag(p, 0, "stdin", &r_stdin, "");
+    argh_string(p, 0, "tls-key", &r_key, "");
+    argh_string(p, 0, "tls-cert", &r_cert, "");
+    argh_rules(p, r_rules);
+    argh_parse(p, argc, argv);
+    return argh_last_error(p)->code;
+}
+
+TEST(test_rules_satisfied)
+{
+    ARGV("--json", "--input", "data.db", "--tls-key", "k.pem", "--tls-cert", "c.pem");
+    argh_parser p;
+    ASSERT_EQ(parse_with_rules(argc, argv, &p), ARGH_E_NONE);
+}
+
+TEST(test_rule_at_most_one)
+{
+    ARGV("--json", "--stdin", "--csv");
+    argh_parser p;
+    ASSERT_EQ(parse_with_rules(argc, argv, &p), ARGH_E_CONFLICT);
+    ASSERT_STR_EQ(error_text(&p), "options '--json' and '--csv' cannot be used together");
+    ASSERT_EQ(argh_exit_code(&p), 2);
+}
+
+TEST(test_rule_exactly_one_missing)
+{
+    ARGV("--yaml");
+    argh_parser p;
+    ASSERT_EQ(parse_with_rules(argc, argv, &p), ARGH_E_ONE_REQUIRED);
+    ASSERT_STR_EQ(error_text(&p), "one of '--input' or '--stdin' is required");
+}
+
+TEST(test_rule_exactly_one_both)
+{
+    ARGV("--stdin", "-i", "x");
+    argh_parser p;
+    ASSERT_EQ(parse_with_rules(argc, argv, &p), ARGH_E_CONFLICT);
+    ASSERT_STR_EQ(error_text(&p), "options '--input' and '--stdin' cannot be used together");
+}
+
+TEST(test_rule_requires)
+{
+    ARGV("--stdin", "--tls-key", "k.pem");
+    argh_parser p;
+    ASSERT_EQ(parse_with_rules(argc, argv, &p), ARGH_E_REQUIRES);
+    ASSERT_STR_EQ(error_text(&p), "option '--tls-key' requires '--tls-cert'");
+}
+
+TEST(test_rule_requires_only_when_given)
+{
+    ARGV("--stdin", "--tls-cert", "c.pem");
+    argh_parser p;
+    ASSERT_EQ(parse_with_rules(argc, argv, &p), ARGH_E_NONE);
+}
+
+TEST(test_rule_at_least_one)
+{
+    static const argh_rule rules[] = {ARGH_AT_LEAST_ONE(&r_all, &r_package), ARGH_RULES_END};
+    char *none[] = {(char *)"prog", NULL};
+    char *both[] = {(char *)"prog", (char *)"--all", (char *)"-p", (char *)"core", NULL};
+    argh_parser p;
+
+    r_all = false;
+    r_package = NULL;
+    setup(&p);
+    argh_flag(&p, 0, "all", &r_all, "");
+    argh_string(&p, 'p', "package", &r_package, "");
+    argh_rules(&p, rules);
+    ASSERT_FALSE(argh_parse(&p, 1, none));
+    ASSERT_STR_EQ(error_text(&p), "one of '--all' or '--package' is required");
+    ASSERT_TRUE(argh_parse(&p, 4, both));
+}
+
+TEST(test_rule_three_names)
+{
+    static const argh_rule rules[] = {ARGH_EXACTLY_ONE(&r_json, &r_yaml, &r_csv), ARGH_RULES_END};
+    ARGV0();
+    argh_parser p;
+    setup(&p);
+    argh_flag(&p, 0, "json", &r_json, "");
+    argh_flag(&p, 0, "yaml", &r_yaml, "");
+    argh_flag(&p, 0, "csv", &r_csv, "");
+    argh_rules(&p, rules);
+
+    ASSERT_FALSE(argh_parse(&p, argc, argv));
+    ASSERT_STR_EQ(error_text(&p), "one of '--json', '--yaml' or '--csv' is required");
+}
+
+TEST(test_rule_config_one_variable)
+{
+    static const argh_rule rules[] = {ARGH_AT_MOST_ONE(&r_json), ARGH_RULES_END};
+    ARGV0();
+    argh_parser p;
+    setup(&p);
+    argh_flag(&p, 0, "json", &r_json, "");
+    argh_rules(&p, rules);
+
+    ASSERT_FALSE(argh_parse(&p, argc, argv));
+    ASSERT_STR_EQ(error_text(&p), "configuration error: a rule needs at least two variables");
+}
+
+/* Definition checks run only without NDEBUG */
+#ifndef NDEBUG
+TEST(test_rule_config_unbound_variable)
+{
+    static int not_an_option;
+    static const argh_rule rules[] = {ARGH_AT_MOST_ONE(&r_json, &not_an_option), ARGH_RULES_END};
+    ARGV0();
+    argh_parser p;
+    setup(&p);
+    argh_flag(&p, 0, "json", &r_json, "");
+    argh_rules(&p, rules);
+
+    ASSERT_FALSE(argh_parse(&p, argc, argv));
+    ASSERT_STR_EQ(error_text(&p), "configuration error: a rule refers to a variable that no option is bound to");
+}
+#endif
+
+#ifndef ARGH_NO_COMMANDS
+/* A rule on a command's options only applies when that command is selected */
+TEST(test_rule_skipped_for_other_command)
+{
+    static bool fast, safe;
+    static const argh_opt run_opts[] = {
+        ARGH_FLAG(0, "fast", &fast, ""),
+        ARGH_FLAG(0, "safe", &safe, ""),
+        ARGH_END,
+    };
+    static const argh_cmd cmds[] = {
+        ARGH_CMD("run", "", run_opts),
+        ARGH_CMD("list", "", NULL),
+        ARGH_CMD_END,
+    };
+    static const argh_rule rules[] = {ARGH_EXACTLY_ONE(&fast, &safe), ARGH_RULES_END};
+    char *list[] = {(char *)"prog", (char *)"list", NULL};
+    char *run[] = {(char *)"prog", (char *)"run", NULL};
+    argh_parser p;
+
+    setup(&p);
+    argh_commands(&p, cmds);
+    argh_rules(&p, rules);
+    ASSERT_TRUE(argh_parse(&p, 2, list));
+    ASSERT_FALSE(argh_parse(&p, 2, run));
+    ASSERT_STR_EQ(error_text(&p), "one of '--fast' or '--safe' is required");
+}
+#endif
+
+/* ----------------------------------------------------------------------------
+ * Validators
+ * ---------------------------------------------------------------------------- */
+
+typedef struct
+{
+    int min, max;
+    int calls;
+} range;
+
+static bool check_range(argh_parser *p, void *ctx)
+{
+    range *r = (range *)ctx;
+    r->calls++;
+    if (r->min > r->max)
+        return argh_fail(p, "--min must not be greater than --max");
+    return true;
+}
+
+TEST(test_validator)
+{
+    ARGV("--min", "5", "--max", "3");
+    range r = {0, 10, 0};
+    argh_parser p;
+    setup(&p);
+    argh_int(&p, 0, "min", &r.min, "");
+    argh_int(&p, 0, "max", &r.max, "");
+    argh_set_validator(&p, check_range, &r);
+
+    ASSERT_FALSE(argh_parse(&p, argc, argv));
+    ASSERT_EQ(r.calls, 1);
+    ASSERT_EQ(argh_last_error(&p)->code, ARGH_E_CUSTOM);
+    ASSERT_EQ(argh_exit_code(&p), 2);
+    ASSERT_STR_EQ(err_text, "prog: --min must not be greater than --max\n"
+                            "Try 'prog --help' for more information.\n");
+}
+
+TEST(test_validator_passes)
+{
+    ARGV("--min", "2");
+    range r = {0, 10, 0};
+    argh_parser p;
+    setup(&p);
+    argh_int(&p, 0, "min", &r.min, "");
+    argh_int(&p, 0, "max", &r.max, "");
+    argh_set_validator(&p, check_range, &r);
+
+    ASSERT_TRUE(argh_parse(&p, argc, argv));
+    ASSERT_EQ(r.calls, 1);
+}
+
+static bool reject_silently(argh_parser *p, void *ctx)
+{
+    (void)p;
+    (void)ctx;
+    return false;
+}
+
+TEST(test_validator_without_message)
+{
+    ARGV0();
+    argh_parser p;
+    setup(&p);
+    argh_set_validator(&p, reject_silently, NULL);
+
+    ASSERT_FALSE(argh_parse(&p, argc, argv));
+    ASSERT_STR_EQ(error_text(&p), "invalid arguments");
+}
+
+TEST(test_validator_not_called_after_errors)
+{
+    ARGV("--min", "x");
+    range r = {0, 10, 0};
+    argh_parser p;
+    setup(&p);
+    argh_int(&p, 0, "min", &r.min, "");
+    argh_set_validator(&p, check_range, &r);
+
+    ASSERT_FALSE(argh_parse(&p, argc, argv));
+    ASSERT_EQ(argh_last_error(&p)->code, ARGH_E_INVALID_VALUE);
+    ASSERT_EQ(r.calls, 0);
+}
+
+TEST(test_validator_not_called_for_help)
+{
+    ARGV("--help");
+    range r = {0, 10, 0};
+    argh_parser p;
+    setup(&p);
+    argh_set_validator(&p, check_range, &r);
+
+    ASSERT_FALSE(argh_parse(&p, argc, argv));
+    ASSERT_EQ(argh_exit_code(&p), 0);
+    ASSERT_EQ(r.calls, 0);
+}
+
 #ifndef ARGH_NO_COMMANDS
 /* ============================================================================
  * Commands
@@ -1569,6 +1839,8 @@ TEST(test_command_config_root_positional)
     ASSERT_EQ(argh_last_error(&p)->code, ARGH_E_CONFIG);
 }
 
+/* Definition checks run only without NDEBUG */
+#ifndef NDEBUG
 TEST(test_command_config_reserved_help)
 {
     static const argh_cmd cmds[] = {ARGH_CMD("help", "Mine", NULL), ARGH_CMD_END};
@@ -1580,7 +1852,10 @@ TEST(test_command_config_reserved_help)
     ASSERT_FALSE(argh_parse(&p, argc, argv));
     ASSERT_STR_EQ(error_text(&p), "configuration error: command name 'help' is reserved, see ARGH_NO_AUTO_HELP");
 }
+#endif
 
+/* Definition checks run only without NDEBUG */
+#ifndef NDEBUG
 TEST(test_command_config_duplicate_with_global)
 {
     static bool clash;
@@ -1596,6 +1871,7 @@ TEST(test_command_config_duplicate_with_global)
     ASSERT_FALSE(argh_parse(&p, argc, argv));
     ASSERT_STR_EQ(error_text(&p), "configuration error: option defined twice (--verbose)");
 }
+#endif
 
 TEST(test_command_posix_mode_at_leaf)
 {
@@ -1767,7 +2043,9 @@ int main(void)
 
     RUN_TEST(test_config_reserved_help);
     RUN_TEST(test_config_no_auto_help_frees_h);
+#ifndef NDEBUG
     RUN_TEST(test_config_duplicate);
+#endif
     RUN_TEST(test_config_builder_overflow);
     RUN_TEST(test_config_missing_target);
 
@@ -1794,6 +2072,26 @@ int main(void)
     RUN_TEST(test_custom_help);
     RUN_TEST(test_custom_required);
     RUN_TEST(test_custom_config_without_type);
+    RUN_TEST(test_rules_satisfied);
+    RUN_TEST(test_rule_at_most_one);
+    RUN_TEST(test_rule_exactly_one_missing);
+    RUN_TEST(test_rule_exactly_one_both);
+    RUN_TEST(test_rule_requires);
+    RUN_TEST(test_rule_requires_only_when_given);
+    RUN_TEST(test_rule_at_least_one);
+    RUN_TEST(test_rule_three_names);
+    RUN_TEST(test_rule_config_one_variable);
+#ifndef NDEBUG
+    RUN_TEST(test_rule_config_unbound_variable);
+#endif
+#if !defined(ARGH_NO_COMMANDS)
+    RUN_TEST(test_rule_skipped_for_other_command);
+#endif
+    RUN_TEST(test_validator);
+    RUN_TEST(test_validator_passes);
+    RUN_TEST(test_validator_without_message);
+    RUN_TEST(test_validator_not_called_after_errors);
+    RUN_TEST(test_validator_not_called_for_help);
 #if !defined(ARGH_NO_COMMANDS)
     RUN_TEST(test_command_dispatch);
 #endif
@@ -1843,10 +2141,14 @@ int main(void)
     RUN_TEST(test_command_config_root_positional);
 #endif
 #if !defined(ARGH_NO_COMMANDS)
+#ifndef NDEBUG
     RUN_TEST(test_command_config_reserved_help);
 #endif
+#endif
 #if !defined(ARGH_NO_COMMANDS)
+#ifndef NDEBUG
     RUN_TEST(test_command_config_duplicate_with_global);
+#endif
 #endif
 #if !defined(ARGH_NO_COMMANDS)
     RUN_TEST(test_command_posix_mode_at_leaf);

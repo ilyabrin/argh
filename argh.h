@@ -120,7 +120,11 @@ extern "C"
         ARGH_E_TOO_MANY_VALUES,     /* list buffer full */
         ARGH_E_CONFIG,              /* mistake in the option definitions */
         ARGH_E_UNKNOWN_COMMAND,     /* tool remtoe */
-        ARGH_E_MISSING_COMMAND      /* tool (when a command is required) */
+        ARGH_E_MISSING_COMMAND,     /* tool (when a command is required) */
+        ARGH_E_CONFLICT,            /* --json --yaml with ARGH_AT_MOST_ONE */
+        ARGH_E_ONE_REQUIRED,        /* none of an ARGH_EXACTLY_ONE / ARGH_AT_LEAST_ONE set */
+        ARGH_E_REQUIRES,            /* --tls-key without --tls-cert (ARGH_REQUIRES) */
+        ARGH_E_CUSTOM               /* argh_fail() from a validator */
     } argh_err;
 
     /* One option, positional or help heading. Build it with the ARGH_* macros
@@ -172,16 +176,45 @@ extern "C"
      *     argh_values includes = ARGH_VALUES(buf); */
 #define ARGH_VALUES(array) {(array), 0, (int)(sizeof(array) / sizeof((array)[0]))}
 
+    /* Variables per rule */
+#define ARGH_RULE_MAX 4
+
+    /* A constraint between options, referring to their variables. Build tables
+     * of them with ARGH_AT_MOST_ONE, ARGH_EXACTLY_ONE, ARGH_AT_LEAST_ONE,
+     * ARGH_REQUIRES and ARGH_RULES_END. */
+    typedef struct argh_rule
+    {
+        int kind;
+        const void *targets[ARGH_RULE_MAX]; /* unused slots are NULL */
+    } argh_rule;
+
+    enum argh_rule_kind
+    {
+        ARGH_R_END = 0,
+        ARGH_R_AT_MOST_ONE,  /* no two of them together */
+        ARGH_R_EXACTLY_ONE,  /* one of them, and only one */
+        ARGH_R_AT_LEAST_ONE, /* one of them or more */
+        ARGH_R_REQUIRES      /* the first needs all the others */
+    };
+
+#define ARGH_AT_MOST_ONE(...) {ARGH_R_AT_MOST_ONE, {__VA_ARGS__}}
+#define ARGH_EXACTLY_ONE(...) {ARGH_R_EXACTLY_ONE, {__VA_ARGS__}}
+#define ARGH_AT_LEAST_ONE(...) {ARGH_R_AT_LEAST_ONE, {__VA_ARGS__}}
+#define ARGH_REQUIRES(target, ...) {ARGH_R_REQUIRES, {target, __VA_ARGS__}}
+#define ARGH_RULES_END {ARGH_R_END, {NULL, NULL, NULL, NULL}}
+
     typedef struct argh_error
     {
         argh_err code;
-        int argv_index;      /* argv position of the problem, -1 if none */
-        const argh_opt *opt; /* option involved, if any */
-        const char *value;   /* offending text, if any */
-        char short_name;     /* offending short option, if any */
-        const char *detail;  /* extra context for ARGH_E_CONFIG */
+        int argv_index;         /* argv position of the problem, -1 if none */
+        const argh_opt *opt;    /* option involved, if any */
+        const char *value;      /* offending text, if any */
+        const char *detail;     /* extra context: ARGH_E_CONFIG, custom types,
+                                   the message of argh_fail() */
         const char *suggestion; /* closest valid name for an unknown option
                                    or command (without dashes), or NULL */
+        const argh_rule *rule;  /* the rule that failed, for rule errors */
+        char short_name;        /* offending short option, if any */
     } argh_error;
 
     struct argh_parser;
@@ -200,34 +233,42 @@ extern "C"
     /* Output sink for help, version and error messages. */
     typedef void (*argh_write_fn)(void *ctx, int to_stderr, const char *text, size_t len);
 
-    /* Lives on the stack. Fields are internal: use the functions below. */
+    /* Checks what rules can't express. Return true if the arguments are fine,
+     * or return argh_fail(p, "message"). */
+    typedef bool (*argh_validate_fn)(struct argh_parser *p, void *ctx);
+
+    /* Lives on the stack. Fields are internal: use the functions below.
+     * Pointers first and small fields last, to keep padding out. */
     typedef struct argh_parser
     {
         const char *argh__name;
         const char *argh__about;
         const char *argh__version;
-        unsigned argh__flags;
-        int argh__status;
-        const char *argh__config_problem;
-
         const argh_opt *argh__tables[ARGH_MAX_TABLES];
-        int argh__table_count;
-
-        argh_opt argh__builder[ARGH_BUILDER_CAP + 1];
-        int argh__builder_count;
-
-        unsigned char argh__seen[(ARGH_MAX_OPTS + 7) / 8];
-
         argh_write_fn argh__write;
         void *argh__write_ctx;
-
+        const argh_rule *argh__rules;
+        /* Set by argh_rules(): calling the rule checker through a pointer
+         * lets the linker drop it from programs that don't use rules */
+        int (*argh__rule_check)(struct argh_parser *p);
+        argh_validate_fn argh__validator;
+        void *argh__validator_ctx;
 #ifndef ARGH_NO_COMMANDS
         const argh_cmd *argh__commands;
         const argh_cmd *argh__path[ARGH_MAX_DEPTH];
-        int argh__depth;
 #endif
-
         argh_error argh__error;
+        argh_opt argh__builder[ARGH_BUILDER_CAP + 1];
+
+        unsigned short argh__builder_count;
+        unsigned char argh__table_count;
+        unsigned char argh__flags;
+        unsigned char argh__status;
+        unsigned char argh__setup_problem; /* ARGH__P_*, found before parsing */
+#ifndef ARGH_NO_COMMANDS
+        unsigned char argh__depth;
+#endif
+        unsigned char argh__seen[(ARGH_MAX_OPTS + 7) / 8];
     } argh_parser;
 
     /* ============================================================================
@@ -286,6 +327,25 @@ extern "C"
     argh_opt *argh_negatable(argh_opt *opt);
     argh_opt *argh_once(argh_opt *opt);
     argh_opt *argh_metavar(argh_opt *opt, const char *metavar);
+
+    /* Sets constraints between options, a table ending with ARGH_RULES_END:
+     *
+     *     static const argh_rule rules[] = {
+     *         ARGH_AT_MOST_ONE(&json, &yaml),
+     *         ARGH_REQUIRES(&tls_key, &tls_cert),
+     *         ARGH_RULES_END
+     *     };
+     *
+     * A rule applies when all its variables belong to options that are active
+     * (the program's own options and those of the selected command). */
+    void argh_rules(argh_parser *p, const argh_rule *rules);
+
+    /* Runs fn after all other checks passed, for anything rules can't say */
+    void argh_set_validator(argh_parser *p, argh_validate_fn fn, void *ctx);
+
+    /* For validators: records an error with this message and returns false.
+     * The message must outlive the parser (a string literal is ideal). */
+    bool argh_fail(argh_parser *p, const char *message);
 
     /* ============================================================================
      * Parsing and results
@@ -418,6 +478,14 @@ extern "C"
 extern "C"
 {
 #endif
+
+    /* Problems found by setup calls, reported by argh_parse */
+    enum
+    {
+        ARGH__P_NONE = 0,
+        ARGH__P_TABLES,
+        ARGH__P_BUILDER
+    };
 
     enum
     {
@@ -802,6 +870,9 @@ extern "C"
         return argh__fail(p, ARGH_E_CONFIG, -1, o, NULL, 0);
     }
 
+    /* Option bound to target on the active path, and its "seen" index */
+    static const argh_opt *argh__find_target(const argh_parser *p, const void *target, int *index);
+
     static int argh__apply(argh_parser *p, const argh_opt *o, int index, const char *v,
                            bool negated, int argi, char short_name)
     {
@@ -853,7 +924,8 @@ extern "C"
                 return argh__fail(p, ARGH_E_UNKNOWN_COMMAND, i, NULL, argv[i], 0);
             if (p->argh__depth >= ARGH_MAX_DEPTH)
                 return argh__config_error(p, "commands nested deeper than ARGH_MAX_DEPTH", NULL);
-            p->argh__path[p->argh__depth++] = c;
+            p->argh__path[p->argh__depth] = c;
+            p->argh__depth++;
         }
         return ARGH__S_HELP;
     }
@@ -888,7 +960,10 @@ extern "C"
                     else if (p->argh__depth >= ARGH_MAX_DEPTH)
                         rc = argh__config_error(p, "commands nested deeper than ARGH_MAX_DEPTH", NULL);
                     else
-                        p->argh__path[p->argh__depth++] = c;
+                    {
+                        p->argh__path[p->argh__depth] = c;
+                        p->argh__depth++;
+                    }
                     if (rc != ARGH__S_OK && apply)
                         return rc;
                     continue;
@@ -1046,6 +1121,123 @@ extern "C"
         if (used < count)
             return argh__fail(p, ARGH_E_UNEXPECTED_ARGUMENT, 1 + used, NULL, argv[1 + used], 0);
         return ARGH__S_OK;
+    }
+
+#ifndef NDEBUG
+    static bool argh__table_has_target(const argh_opt *o, const void *target)
+    {
+        for (; o && o->kind != ARGH_K_END; o++)
+            if (o->target == target && o->kind != ARGH_K_GROUP)
+                return true;
+        return false;
+    }
+
+#ifndef ARGH_NO_COMMANDS
+    static bool argh__tree_has_target(const argh_cmd *cmds, const void *target)
+    {
+        for (; cmds && cmds->name; cmds++)
+            if (argh__table_has_target(cmds->opts, target) || argh__tree_has_target(cmds->subs, target))
+                return true;
+        return false;
+    }
+#endif
+
+    /* Is target bound to any option at all, selected command or not? */
+    static bool argh__target_exists(const argh_parser *p, const void *target)
+    {
+        int t;
+        for (t = 0; t < p->argh__table_count; t++)
+            if (argh__table_has_target(p->argh__tables[t], target))
+                return true;
+#ifndef ARGH_NO_COMMANDS
+        return argh__tree_has_target(p->argh__commands, target);
+#else
+        return false;
+#endif
+    }
+#endif
+
+    /* Evaluates the rule table. Rules with a variable outside the active path
+     * are skipped: they belong to a command that wasn't selected. */
+    static int argh__check_rules(argh_parser *p)
+    {
+        const argh_rule *r;
+        for (r = p->argh__rules; r && r->kind != ARGH_R_END; r++)
+        {
+            int given = 0, count = 0, i, index;
+            bool active = true;
+            const argh_opt *first_given = NULL, *missing = NULL;
+
+            for (i = 0; i < ARGH_RULE_MAX && r->targets[i]; i++)
+            {
+                const argh_opt *o = argh__find_target(p, r->targets[i], &index);
+                count++;
+                if (!o)
+                {
+#ifndef NDEBUG
+                    if (!argh__target_exists(p, r->targets[i]))
+                        return argh__config_error(p, "a rule refers to a variable that no option is bound to", NULL);
+#endif
+                    active = false;
+                    break;
+                }
+                if (argh__seen(p, index))
+                {
+                    given++;
+                    if (!first_given)
+                        first_given = o;
+                }
+                else if (i > 0 && !missing)
+                {
+                    missing = o;
+                }
+            }
+            if (!active)
+                continue;
+            if (count < 2)
+                return argh__config_error(p, "a rule needs at least two variables", NULL);
+
+            p->argh__error.rule = r;
+            switch (r->kind)
+            {
+            case ARGH_R_AT_MOST_ONE:
+                if (given > 1)
+                    return argh__fail(p, ARGH_E_CONFLICT, -1, first_given, NULL, 0);
+                break;
+            case ARGH_R_EXACTLY_ONE:
+                if (given > 1)
+                    return argh__fail(p, ARGH_E_CONFLICT, -1, first_given, NULL, 0);
+                if (given == 0)
+                    return argh__fail(p, ARGH_E_ONE_REQUIRED, -1, NULL, NULL, 0);
+                break;
+            case ARGH_R_AT_LEAST_ONE:
+                if (given == 0)
+                    return argh__fail(p, ARGH_E_ONE_REQUIRED, -1, NULL, NULL, 0);
+                break;
+            case ARGH_R_REQUIRES:
+            {
+                int head_index;
+                argh__find_target(p, r->targets[0], &head_index);
+                if (argh__seen(p, head_index) && missing)
+                    return argh__fail(p, ARGH_E_REQUIRES, -1, missing, NULL, 0);
+                break;
+            }
+            default:
+                return argh__config_error(p, "unknown rule kind", NULL);
+            }
+            p->argh__error.rule = NULL;
+        }
+        return ARGH__S_OK;
+    }
+
+    static int argh__run_validator(argh_parser *p)
+    {
+        if (!p->argh__validator || p->argh__validator(p, p->argh__validator_ctx))
+            return ARGH__S_OK;
+        /* A validator that returned false without argh_fail() */
+        if (p->argh__error.code != ARGH_E_CUSTOM)
+            return argh__fail(p, ARGH_E_CUSTOM, -1, NULL, NULL, 0);
+        return ARGH__S_ERROR;
     }
 
     static int argh__check_required(argh_parser *p)
@@ -1232,8 +1424,10 @@ extern "C"
     {
         int total = 0;
 
-        if (p->argh__config_problem)
-            return argh__config_error(p, p->argh__config_problem, NULL);
+        if (p->argh__setup_problem == ARGH__P_TABLES)
+            return argh__config_error(p, "more tables than ARGH_MAX_TABLES", NULL);
+        if (p->argh__setup_problem == ARGH__P_BUILDER)
+            return argh__config_error(p, "more builder options than ARGH_BUILDER_CAP", NULL);
 
         ARGH__EACH(p, o, index)
         {
@@ -1406,7 +1600,7 @@ extern "C"
 
     void argh_set_flags(argh_parser *p, unsigned flags)
     {
-        p->argh__flags = flags;
+        p->argh__flags = (unsigned char)flags;
     }
 
     void argh_set_writer(argh_parser *p, argh_write_fn write, void *ctx)
@@ -1419,10 +1613,11 @@ extern "C"
     {
         if (p->argh__table_count >= ARGH_MAX_TABLES)
         {
-            p->argh__config_problem = "more tables than ARGH_MAX_TABLES";
+            p->argh__setup_problem = ARGH__P_TABLES;
             return;
         }
-        p->argh__tables[p->argh__table_count++] = table;
+        p->argh__tables[p->argh__table_count] = table;
+        p->argh__table_count++;
     }
 
 #ifndef ARGH_NO_COMMANDS
@@ -1438,7 +1633,7 @@ extern "C"
         argh_opt *o;
         if (p->argh__builder_count >= ARGH_BUILDER_CAP)
         {
-            p->argh__config_problem = "more builder options than ARGH_BUILDER_CAP";
+            p->argh__setup_problem = ARGH__P_BUILDER;
             return NULL;
         }
         /* The builder joins the table list at its first use, so help order
@@ -1446,10 +1641,11 @@ extern "C"
         if (p->argh__builder_count == 0)
         {
             argh_table(p, p->argh__builder);
-            if (p->argh__config_problem)
+            if (p->argh__setup_problem)
                 return NULL;
         }
-        o = &p->argh__builder[p->argh__builder_count++];
+        o = &p->argh__builder[p->argh__builder_count];
+        p->argh__builder_count++;
         o->short_name = short_name;
         o->long_name = long_name;
         o->kind = (unsigned char)kind;
@@ -1580,12 +1776,16 @@ extern "C"
             st = argh__assign_positionals(p, argv, positional_count);
         if (st == ARGH__S_OK)
             st = argh__check_required(p);
+        if (st == ARGH__S_OK)
+            st = p->argh__rule_check ? p->argh__rule_check(p) : ARGH__S_OK;
+        if (st == ARGH__S_OK)
+            st = argh__run_validator(p);
 
 #ifndef ARGH_NO_SUGGEST
         if (st == ARGH__S_ERROR)
             argh__suggest(p);
 #endif
-        p->argh__status = st;
+        p->argh__status = (unsigned char)st;
         switch (st)
         {
         case ARGH__S_OK:
@@ -1610,13 +1810,41 @@ extern "C"
         return p->argh__status == ARGH__S_ERROR ? 2 : 0;
     }
 
-    bool argh_given(const argh_parser *p, const void *target)
+    static const argh_opt *argh__find_target(const argh_parser *p, const void *target, int *index)
     {
-        ARGH__EACH(p, o, index)
+        ARGH__EACH(p, o, i)
         {
             if (o->target == target && o->kind != ARGH_K_GROUP)
-                return argh__seen(p, index);
+            {
+                *index = i;
+                return o;
+            }
         }
+        return NULL;
+    }
+
+    bool argh_given(const argh_parser *p, const void *target)
+    {
+        int index;
+        return argh__find_target(p, target, &index) && argh__seen(p, index);
+    }
+
+    void argh_rules(argh_parser *p, const argh_rule *rules)
+    {
+        p->argh__rules = rules;
+        p->argh__rule_check = argh__check_rules;
+    }
+
+    void argh_set_validator(argh_parser *p, argh_validate_fn fn, void *ctx)
+    {
+        p->argh__validator = fn;
+        p->argh__validator_ctx = ctx;
+    }
+
+    bool argh_fail(argh_parser *p, const char *message)
+    {
+        argh__fail(p, ARGH_E_CUSTOM, -1, NULL, NULL, 0);
+        p->argh__error.detail = message;
         return false;
     }
 
@@ -1823,6 +2051,45 @@ extern "C"
             {
                 argh__sb_put(&b, "missing command");
             }
+            break;
+        case ARGH_E_CONFLICT:
+        case ARGH_E_ONE_REQUIRED:
+        {
+            /* Names the options of the rule: all of them, or only the given
+             * ones for a conflict */
+            int i, index, listed = 0, total = 0;
+            const argh_opt *names[ARGH_RULE_MAX];
+            for (i = 0; e->rule && i < ARGH_RULE_MAX && e->rule->targets[i]; i++)
+            {
+                const argh_opt *o = argh__find_target(p, e->rule->targets[i], &index);
+                if (o && (e->code != ARGH_E_CONFLICT || argh__seen(p, index)))
+                    names[total++] = o;
+            }
+            argh__sb_put(&b, e->code == ARGH_E_CONFLICT ? "options " : "one of ");
+            for (listed = 0; listed < total; listed++)
+            {
+                if (listed)
+                    argh__sb_put(&b, listed == total - 1 ? (e->code == ARGH_E_CONFLICT ? " and " : " or ") : ", ");
+                argh__sb_char(&b, '\'');
+                argh__sb_opt_name(&b, names[listed], 0);
+                argh__sb_char(&b, '\'');
+            }
+            argh__sb_put(&b, e->code == ARGH_E_CONFLICT ? " cannot be used together" : " is required");
+            break;
+        }
+        case ARGH_E_REQUIRES:
+        {
+            int index;
+            const argh_opt *head = e->rule ? argh__find_target(p, e->rule->targets[0], &index) : NULL;
+            argh__sb_put(&b, "option '");
+            argh__sb_opt_name(&b, head, 0);
+            argh__sb_put(&b, "' requires '");
+            argh__sb_opt_name(&b, e->opt, 0);
+            argh__sb_char(&b, '\'');
+            break;
+        }
+        case ARGH_E_CUSTOM:
+            argh__sb_put(&b, e->detail ? e->detail : "invalid arguments");
             break;
         case ARGH_E_CONFIG:
             argh__sb_put(&b, "configuration error: ");
