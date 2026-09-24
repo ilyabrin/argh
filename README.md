@@ -344,6 +344,7 @@ Define before including `argh.h`:
 | `ARGH_MAX_TABLES`  |       8 | Tables per parser. The builder counts as one                   |
 | `ARGH_MAX_DEPTH`   |       4 | Levels of nested commands                                      |
 | `ARGH_NO_SUGGEST`  |         | Define to remove "did you mean" suggestions (about 0.8 KB)     |
+| `ARGH_NO_COMMANDS` |         | Define to remove commands (about 2.6 KB) if you don't use them |
 
 Mistakes in the definitions, such as two options with the same name or a missing variable, are reported by `argh_parse` as `ARGH_E_CONFIG`. The checks for duplicate names and for the command tree run in builds without `NDEBUG`.
 
