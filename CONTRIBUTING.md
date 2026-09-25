@@ -4,7 +4,7 @@ Thanks for helping! Bug reports, test cases, docs fixes and code are all welcome
 
 ## Before you start
 
-argh.h is in early development (0.x), and the API can still change. Subcommands and custom value types are planned for v0.3, and a reduced build for microcontrollers for v0.4. Because of that:
+argh.h is in early development (0.x), and the API can still change until v1.0. Because of that:
 
 - **Bug fixes, tests, docs and portability fixes:** open a pull request directly.
 - **New features or API changes:** please open an issue first. The feature may already be planned, or it may need a different shape. A short discussion saves you from writing code that has to be redone.
@@ -25,7 +25,7 @@ make clean
 
 Use a different compiler with `make CC=clang test`.
 
-CI runs the same commands on Linux (GCC, Clang, plus AddressSanitizer and UndefinedBehaviorSanitizer), macOS (Clang) and Windows (MinGW, MSVC). If you can, run the sanitizers locally before sending a change that touches parsing:
+CI runs the same commands on Linux (GCC, Clang, plus AddressSanitizer and UndefinedBehaviorSanitizer and 2 minutes of fuzzing), macOS (Clang) and Windows (MinGW, MSVC), and checks the firmware size on ARM (`make size-arm`). If you can, run the sanitizers locally before sending a change that touches parsing:
 
 ```sh
 make CC=clang test CFLAGS="-std=c99 -Wall -Wextra -Wpedantic -Werror -O1 -g -fsanitize=address,undefined"

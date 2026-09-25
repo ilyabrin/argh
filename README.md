@@ -10,7 +10,7 @@ int jobs = 4;
 argh_int(&p, 'j', "jobs", &jobs, "Parallel jobs");
 ```
 
-> **Status: early development (v0.4).** Tested on every push, but the API may still change before v1.0.
+> **Status: early development (v0.4).** Tested in CI on every pull request, but the API may still change before v1.0.
 > Feedback on the API is very welcome.
 
 ## Why argh
@@ -161,7 +161,12 @@ argh_custom(&p, 's', "max-size", &max_size, &size_type, "Largest file to keep");
 
 ```console
 $ ./tool --help
+Usage: tool [OPTIONS]
+
+Options:
   -s, --max-size <size>  Largest file to keep (default: 64M)
+
+  -h, --help             Print help
 
 $ ./tool --max-size 10Q
 tool: invalid value '10Q' for '--max-size': expected a size like 512K or 10M
@@ -207,10 +212,15 @@ argh_rules(&p, rules);
 ```console
 $ ./export --json --csv --stdin
 export: options '--json' and '--csv' cannot be used together
+Try 'export --help' for more information.
+
 $ ./export --yaml
 export: one of '--input' or '--stdin' is required
+Try 'export --help' for more information.
+
 $ ./export --stdin --tls-key k.pem
 export: option '--tls-key' requires '--tls-cert'
+Try 'export --help' for more information.
 ```
 
 | Rule                              | Meaning                                  |
@@ -238,6 +248,7 @@ argh_set_validator(&p, check_sizes, NULL);
 ```console
 $ ./export --stdin --min-size 50 --max-size 10
 export: --min-size must not be greater than --max-size
+Try 'export --help' for more information.
 ```
 
 ### Option tables
@@ -261,7 +272,7 @@ argh_init(&p, "mytool", "Does useful things");
 argh_table(&p, options);
 ```
 
-- The last macro argument (flags such as `ARGH_REQUIRED | ARGH_ONCE`) is optional.
+- After the help text come two optional arguments: flags such as `ARGH_REQUIRED | ARGH_ONCE`, then the value name for help. The value name needs flags before it: `ARGH_STRING(0, "tls-key", &key, "Client key", 0, "<file>")`.
 - The compiler warns if a variable has the wrong type, for example `ARGH_INT` on a `bool`. In C++ it's an error.
 - `argh_table` can be called several times, so each module of a program can define its own options. Tables and builder calls can be mixed.
 - `ARGH_GROUP` starts a new section in the help output.
@@ -364,7 +375,7 @@ Command names match exactly, like options. A program with commands can't have po
 
 ### Help and version
 
-`-h`/`--help` always works. `-V`/`--version` works once you set a version:
+`-h`/`--help` works out of the box, and so does `tool help <command>` in a program with commands. `-V`/`--version` works once you set a version:
 
 ```c
 argh_version(&p, "1.4.2");   /* ./mytool --version  ->  mytool 1.4.2 */
@@ -390,7 +401,7 @@ tool: unknown command 'ad' (did you mean 'add'?)
 Try 'tool remote --help' for more information.
 ```
 
-Suggestions only name options and commands that are valid at that point, never hidden options, and only when the match is close (up to 2 edits, counting a swap of two letters as one). They are computed only after an error, so they cost nothing on a successful parse. `ARGH_NO_SUGGEST` removes them.
+Suggestions only name options and commands that are valid at that point, never hidden options, and only when the match is close: at most 2 edits, and no more than a third of the longer name (a swap of two letters counts as one edit). They are computed only after an error, so they cost nothing on a successful parse. `ARGH_NO_SUGGEST` removes them.
 
 To handle errors yourself:
 
@@ -432,8 +443,8 @@ argh_set_writer(&p, uart_write, NULL);
 ```
 
 - **`ARGH_NO_STDIO`** keeps stdio out of your firmware. Output goes only to your writer; without one it is discarded. Help, errors and defaults in help work the same.
-- **`ARGH_NO_FLOAT`** matters more than it looks: the C library's `strtod` pulls in a large float parser, and on newlib also printf, about 27 KB on a Cortex-M0. Without it argh adds about 11 KB of flash, or about 9.3 KB with `ARGH_NO_COMMANDS` and `ARGH_NO_SUGGEST` (see [BENCHMARKS.md](BENCHMARKS.md#microcontrollers)). If you need fractions, a [custom type](#your-own-value-types) that parses fixed-point values costs far less.
-- **RAM:** the parser lives on the stack or wherever you put it: about 164 bytes on a 32-bit MCU plus 28 bytes per builder option. Set `ARGH_BUILDER_CAP` to what you use, or to 0 with `static const` tables, which stay in flash.
+- **`ARGH_NO_FLOAT`** matters more than it looks: the C library's `strtod` pulls in a large float parser, and on newlib also printf, about 27 KB on a Cortex-M0. Without it argh adds about 11 KB of flash, or 9.2 to 9.4 KB with `ARGH_NO_COMMANDS` and `ARGH_NO_SUGGEST` (see [BENCHMARKS.md](BENCHMARKS.md#microcontrollers)). If you need fractions, a [custom type](#your-own-value-types) that parses fixed-point values costs far less.
+- **RAM:** the parser lives on the stack or wherever you put it. On a 32-bit MCU it is 136 bytes plus 28 bytes for each of the `ARGH_BUILDER_CAP` + 1 builder slots: 1,060 bytes by default. Set `ARGH_BUILDER_CAP` to what you use, or to 0 with `static const` tables, which stay in flash: then it is 164 bytes.
 
 With `ARGH_NO_STDIO` alone, doubles in help are shown with up to 6 decimals, and very large or very small ones are left out.
 
@@ -462,29 +473,34 @@ argh is strict where other parsers guess:
 
 Define before including `argh.h`:
 
-| Macro              | Default | Meaning                                                        |
-| ------------------ | ------: | -------------------------------------------------------------- |
-| `ARGH_BUILDER_CAP` |      32 | Options that builder calls can add. `0` if you only use tables |
-| `ARGH_MAX_OPTS`    |      64 | Options on the active command path, all tables combined        |
-| `ARGH_MAX_TABLES`  |       8 | Tables per parser. The builder counts as one                   |
-| `ARGH_MAX_DEPTH`   |       4 | Levels of nested commands                                      |
-| `ARGH_NO_SUGGEST`  |         | Define to remove "did you mean" suggestions (about 0.8 KB)     |
-| `ARGH_NO_COMMANDS` |         | Define to remove commands (about 2.6 KB) if you don't use them |
-| `ARGH_NO_STDIO`    |         | Define to build without `<stdio.h>`, for firmware (see below)  |
-| `ARGH_NO_FLOAT`    |         | Define to remove `argh_double` and all floating point          |
+| Macro              | Default | Meaning                                                                        |
+| ------------------ | ------: | ------------------------------------------------------------------------------ |
+| `ARGH_BUILDER_CAP` |      32 | Options that builder calls can add. `0` if you only use tables                 |
+| `ARGH_MAX_OPTS`    |      64 | Options on the active command path, all tables combined                        |
+| `ARGH_MAX_TABLES`  |       8 | Tables per parser. The builder counts as one                                   |
+| `ARGH_MAX_DEPTH`   |       4 | Levels of nested commands                                                      |
+| `ARGH_NO_SUGGEST`  |         | Define to remove "did you mean" suggestions (about 0.8 KB)                     |
+| `ARGH_NO_COMMANDS` |         | Define to remove commands (about 3.0 KB) if you don't use them                 |
+| `ARGH_NO_STDIO`    |         | Define to build without `<stdio.h>`, see [Microcontrollers](#microcontrollers) |
+| `ARGH_NO_FLOAT`    |         | Define to remove `argh_double` and floating point (27 KB on newlib firmware)   |
+| `NDEBUG`           |         | The usual release flag: skips the slower checks of your definitions            |
 
-Mistakes in the definitions, such as two options with the same name or a missing variable, are reported by `argh_parse` as `ARGH_E_CONFIG`. The checks for duplicate names and for the command tree run in builds without `NDEBUG`.
+Sizes are for Linux GCC. Mistakes in the definitions, such as two options with the same name or a missing variable, are reported by `argh_parse` as `ARGH_E_CONFIG`. The checks for duplicate names, for the command tree and for variables in rules run only in builds without `NDEBUG`.
 
 ## API reference
+
+Everything public in `argh.h`. Names marked *commands* are missing with `ARGH_NO_COMMANDS`, and *float* ones with `ARGH_NO_FLOAT`.
+
+### Functions
 
 ```c
 /* Setup */
 void argh_init(argh_parser *p, const char *name, const char *about);  /* name NULL: from argv[0] */
-void argh_version(argh_parser *p, const char *version);
+void argh_version(argh_parser *p, const char *version);                /* enables -V/--version */
 void argh_set_flags(argh_parser *p, unsigned flags);                   /* ARGH_POSIX, ARGH_NO_AUTO_HELP */
-void argh_set_writer(argh_parser *p, argh_write_fn write, void *ctx);
-void argh_table(argh_parser *p, const argh_opt *table);
-void argh_commands(argh_parser *p, const argh_cmd *commands);
+void argh_set_writer(argh_parser *p, argh_write_fn write, void *ctx);  /* NULL: back to the default */
+void argh_table(argh_parser *p, const argh_opt *table);                /* up to ARGH_MAX_TABLES */
+void argh_commands(argh_parser *p, const argh_cmd *commands);          /* commands */
 void argh_rules(argh_parser *p, const argh_rule *rules);
 void argh_set_validator(argh_parser *p, argh_validate_fn fn, void *ctx);
 bool argh_fail(argh_parser *p, const char *message);                   /* inside a validator */
@@ -494,7 +510,7 @@ argh_opt *argh_flag  (argh_parser *p, char s, const char *l, bool *target, const
 argh_opt *argh_count (argh_parser *p, char s, const char *l, int *target, const char *help);
 argh_opt *argh_int   (argh_parser *p, char s, const char *l, int *target, const char *help);
 argh_opt *argh_long  (argh_parser *p, char s, const char *l, long *target, const char *help);
-argh_opt *argh_double(argh_parser *p, char s, const char *l, double *target, const char *help);
+argh_opt *argh_double(argh_parser *p, char s, const char *l, double *target, const char *help);  /* float */
 argh_opt *argh_string(argh_parser *p, char s, const char *l, const char **target, const char *help);
 argh_opt *argh_enum  (argh_parser *p, char s, const char *l, int *target, const char *const *choices, const char *help);
 argh_opt *argh_list  (argh_parser *p, char s, const char *l, argh_values *target, const char *help);
@@ -512,15 +528,95 @@ argh_opt *argh_once(argh_opt *o);
 argh_opt *argh_metavar(argh_opt *o, const char *metavar);   /* "<file>" instead of "<value>" */
 
 /* Parsing and results */
-bool argh_parse(argh_parser *p, int argc, char **argv);
+bool argh_parse(argh_parser *p, int argc, char **argv);       /* false: help, version or error shown */
 int argh_exit_code(const argh_parser *p);                    /* 0, or 2 after an error */
 bool argh_given(const argh_parser *p, const void *target);
-const argh_cmd *argh_command(const argh_parser *p);         /* selected command, or NULL */
-int argh_run(argh_parser *p, void *user);                     /* calls its handler */
+const argh_cmd *argh_command(const argh_parser *p);         /* selected command, or NULL; commands */
+int argh_run(argh_parser *p, void *user);                     /* calls its handler, or returns 0; commands */
 const argh_error *argh_last_error(const argh_parser *p);
-size_t argh_format_error(const argh_parser *p, char *buf, size_t size);
+size_t argh_format_error(const argh_parser *p, char *buf, size_t size);  /* returns the full length */
 void argh_print_help(const argh_parser *p);
 ```
+
+### Macros
+
+```c
+/* Options, in a table ending with ARGH_END. Trailing arguments: [flags[, metavar]] */
+ARGH_FLAG(s, l, &bool_var, help, ...)        ARGH_STRING(s, l, &str_var, help, ...)
+ARGH_COUNT(s, l, &int_var, help, ...)        ARGH_ENUM(s, l, &int_var, choices, help, ...)
+ARGH_INT(s, l, &int_var, help, ...)          ARGH_LIST(s, l, &values_var, help, ...)
+ARGH_LONG(s, l, &long_var, help, ...)        ARGH_POS(name, &str_var, help, ...)
+ARGH_DOUBLE(s, l, &double_var, help, ...)    ARGH_REST(name, &values_var, help, ...)
+ARGH_CUSTOM(s, l, &any_var, &type, help, ...)
+ARGH_GROUP(title)                            ARGH_END
+
+/* Commands, in a table ending with ARGH_CMD_END (commands) */
+ARGH_CMD(name, help, options[, handler[, flags]])   /* flags: ARGH_POSIX */
+ARGH_CMD_GROUP(name, help, subcommands)
+ARGH_CMD_END
+
+/* Rules, 2 to 4 variables each, in a table ending with ARGH_RULES_END */
+ARGH_AT_MOST_ONE(&a, &b, ...)     ARGH_EXACTLY_ONE(&a, &b, ...)
+ARGH_AT_LEAST_ONE(&a, &b, ...)    ARGH_REQUIRES(&a, &b, ...)
+ARGH_RULES_END
+
+/* A list backed by a fixed array */
+const char *buf[8];
+argh_values list = ARGH_VALUES(buf);
+```
+
+Option flags, combined with `|`: `ARGH_REQUIRED`, `ARGH_OPTIONAL` (positionals), `ARGH_HIDDEN`, `ARGH_NEGATABLE` (flags), `ARGH_ONCE`. Parser flags: `ARGH_POSIX`, `ARGH_NO_AUTO_HELP`.
+
+### Types
+
+```c
+typedef struct argh_values { const char **items; int count; int capacity; } argh_values;
+
+typedef struct argh_type {
+    const char *metavar;                                   /* "<size>", NULL for "<value>" */
+    const char *(*parse)(const char *text, void *target);  /* NULL, or the reason it failed */
+    bool (*format)(const void *target, char *buf, size_t size);  /* optional, for defaults */
+} argh_type;
+
+typedef struct argh_error {
+    argh_err code;
+    int argv_index;          /* argv position of the problem, -1 if none */
+    const argh_opt *opt;     /* option involved, if any */
+    const char *value;       /* offending text, if any */
+    const char *detail;      /* ARGH_E_CONFIG, custom types, the message of argh_fail() */
+    const char *suggestion;  /* closest valid name, without dashes, or NULL */
+    const argh_rule *rule;   /* the rule that failed */
+    char short_name;         /* offending short option, if any */
+} argh_error;
+
+typedef void (*argh_write_fn)(void *ctx, int to_stderr, const char *text, size_t len);
+typedef bool (*argh_validate_fn)(argh_parser *p, void *ctx);
+```
+
+`argh_parser`, `argh_opt`, `argh_cmd` and `argh_rule` are plain structs: create them with the functions and macros above, and treat their fields as internal. The flags come from `enum argh_opt_flag` and `enum argh_parser_flag`; `enum argh_kind` and `enum argh_rule_kind` are what the macros store in `argh_opt` and `argh_rule`. `ARGH_RULE_MAX` (4) is the most variables one rule can take.
+
+### Error codes
+
+| Code                         | Example                                                  |
+| ---------------------------- | -------------------------------------------------------- |
+| `ARGH_E_NONE`                | no error                                                 |
+| `ARGH_E_UNKNOWN_OPTION`      | `--verbos`                                               |
+| `ARGH_E_MISSING_VALUE`       | `--jobs` at the end of the line                          |
+| `ARGH_E_INVALID_VALUE`       | `--jobs abc`, `--mode slow`, a custom type's error       |
+| `ARGH_E_OUT_OF_RANGE`        | `--jobs 99999999999`                                     |
+| `ARGH_E_UNEXPECTED_VALUE`    | `--count=3` on a counter                                 |
+| `ARGH_E_SHORT_EQUALS`        | `-o=file`                                                |
+| `ARGH_E_UNEXPECTED_ARGUMENT` | a positional argument nobody asked for                   |
+| `ARGH_E_MISSING_REQUIRED`    | a required option or positional is absent                |
+| `ARGH_E_REPEATED`            | an `ARGH_ONCE` option given twice                        |
+| `ARGH_E_TOO_MANY_VALUES`     | a list is full                                           |
+| `ARGH_E_CONFIG`              | a mistake in the definitions                             |
+| `ARGH_E_UNKNOWN_COMMAND`     | `tool remtoe`                                            |
+| `ARGH_E_MISSING_COMMAND`     | `tool remote` when `remote` needs a command              |
+| `ARGH_E_CONFLICT`            | `--json --yaml` with `ARGH_AT_MOST_ONE`                  |
+| `ARGH_E_ONE_REQUIRED`        | none of an `ARGH_EXACTLY_ONE` or `ARGH_AT_LEAST_ONE` set |
+| `ARGH_E_REQUIRES`            | `--tls-key` without `--tls-cert`                         |
+| `ARGH_E_CUSTOM`              | `argh_fail()` from a validator                           |
 
 ## Upgrading from 0.1
 
@@ -560,7 +656,7 @@ if (!argh_parse(&p, argc, argv)) return argh_exit_code(&p);
 
 Three complete programs in [examples/](examples), each a real kind of tool:
 
-- **[wc](examples/wc.c)**: counts lines, words and bytes like the Unix tool. The basics in about 40 lines.
+- **[wc](examples/wc.c)**: counts lines, words and bytes like the Unix tool. The basics: 8 lines of argh code.
 - **[logship](examples/logship.c)**: sends log files to a collector. An option table with groups, sizes and durations as custom types, rules and a validator.
 - **[pkg](examples/pkg)**: a package manager front end in the style of `cargo`. Nested commands spread over several files, global options, handlers with an application context.
 
@@ -568,21 +664,19 @@ Three complete programs in [examples/](examples), each a real kind of tool:
 
 ## Known limitations
 
-Planned for upcoming versions:
-
 - **Help and error text cannot be removed.** On a microcontroller argh adds about 9 to 11 KB of flash, strings included (see [Microcontrollers](#microcontrollers)).
 - Floating-point values follow the C locale's decimal separator, like `strtod`.
 
 ## Benchmarks
 
-Time to set up a parser with 30 options and parse 17 arguments, release builds (`-O2 -DNDEBUG`), from CI:
+Time to set up a parser with 30 options and parse 17 arguments, release builds (`-O2 -DNDEBUG`), v0.4 on CI. Each row comes from one machine; compare within a row:
 
 | Platform           | argh (table) | argh (builder) | getopt_long |
 | ------------------ | -----------: | -------------: | ----------: |
-| macOS, Clang       |       422 ns |         450 ns |      399 ns |
-| Linux, Clang       |       707 ns |         780 ns |      629 ns |
-| Linux, GCC         |       723 ns |         807 ns |      618 ns |
-| Windows, MinGW GCC |     1,098 ns |       1,147 ns |      890 ns |
+| macOS, Clang       |       771 ns |         824 ns |      690 ns |
+| Linux, Clang       |       307 ns |         334 ns |      289 ns |
+| Linux, GCC         |       677 ns |         769 ns |      588 ns |
+| Windows, MinGW GCC |     1,093 ns |       1,149 ns |      908 ns |
 
 argh makes zero heap allocations. Details, memory, code size and the method: [BENCHMARKS.md](BENCHMARKS.md). Run them with `make bench`.
 
