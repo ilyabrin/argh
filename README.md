@@ -705,6 +705,8 @@ CI runs all of these on Linux, macOS and Windows (GCC, Clang, MinGW, MSVC), plus
 
 ## Contributing
 
+Using a coding agent? Point it at [llms.txt](llms.txt): a compact guide to setting up and using argh.h correctly.
+
 Bug reports, tests and fixes are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for how to build, test and send a pull request, and [CHANGELOG.md](CHANGELOG.md) for what changed between versions.
 
 ## License

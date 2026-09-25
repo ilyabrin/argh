@@ -9,6 +9,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 ### Added
 
 - `ARGH_VERSION_MAJOR`, `ARGH_VERSION_MINOR`, `ARGH_VERSION_PATCH` and `ARGH_VERSION`, to check the version at compile time.
+- [llms.txt](llms.txt): a guide for coding agents, with the setup, the rules that are easy to get wrong and every feature in short.
 - `ARGH_STATIC`: includes the implementation and makes every function `static`, for one-file programs and libraries that embed their own copy.
 
 ### Changed (breaking)
