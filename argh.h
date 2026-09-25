@@ -63,6 +63,20 @@
 #define ARGH_MAX_DEPTH 4
 #endif
 
+/* The settings above change the size of argh_parser, so every file that
+ * includes argh.h must use the same ones. argh_init is renamed after them:
+ * files with different settings fail to link, with a name such as
+ * argh_init_settings_b32_o64_t8_d4_cmd in the error, instead of corrupting
+ * memory at run time. Define the settings as plain numbers. */
+#ifdef ARGH_NO_COMMANDS
+#define ARGH__CMD_TAG nocmd
+#else
+#define ARGH__CMD_TAG cmd
+#endif
+#define ARGH__INIT_NAME_(b, o, t, d, c) argh_init_settings_b##b##_o##o##_t##t##_d##d##_##c
+#define ARGH__INIT_NAME(b, o, t, d, c) ARGH__INIT_NAME_(b, o, t, d, c)
+#define argh_init ARGH__INIT_NAME(ARGH_BUILDER_CAP, ARGH_MAX_OPTS, ARGH_MAX_TABLES, ARGH_MAX_DEPTH, ARGH__CMD_TAG)
+
 #ifdef __cplusplus
 extern "C"
 {
@@ -72,22 +86,23 @@ extern "C"
      * Types
      * ============================================================================ */
 
-    /* What an option entry is. Stored in argh_opt.kind. */
-    enum argh_kind
+    /* Internal: what an option entry is, stored in argh_opt.kind by the
+     * macros and builder calls. Not part of the API, values may change. */
+    enum argh__kind
     {
-        ARGH_K_END = 0, /* table terminator */
-        ARGH_K_FLAG,    /* bool:          -v, --verbose, --no-verbose */
-        ARGH_K_COUNT,   /* int:           -vvv */
-        ARGH_K_INT,     /* int:           -j 4, --jobs=4 */
-        ARGH_K_LONG,    /* long:          same as int */
-        ARGH_K_DOUBLE,  /* double:        --ratio 0.5 */
-        ARGH_K_STRING,  /* const char *:  -o file */
-        ARGH_K_ENUM,    /* int (index):   --mode fast */
-        ARGH_K_LIST,    /* argh_values:   -I a -I b */
-        ARGH_K_POS,     /* const char *:  positional argument */
-        ARGH_K_REST,    /* argh_values:   all remaining positionals */
-        ARGH_K_GROUP,   /* help section heading */
-        ARGH_K_CUSTOM   /* your type:     --size 10M, see argh_type */
+        ARGH__K_END = 0, /* table terminator */
+        ARGH__K_FLAG,    /* bool:          -v, --verbose, --no-verbose */
+        ARGH__K_COUNT,   /* int:           -vvv */
+        ARGH__K_INT,     /* int:           -j 4, --jobs=4 */
+        ARGH__K_LONG,    /* long:          same as int */
+        ARGH__K_DOUBLE,  /* double:        --ratio 0.5 */
+        ARGH__K_STRING,  /* const char *:  -o file */
+        ARGH__K_ENUM,    /* int (index):   --mode fast */
+        ARGH__K_LIST,    /* argh_values:   -I a -I b */
+        ARGH__K_POS,     /* const char *:  positional argument */
+        ARGH__K_REST,    /* argh_values:   all remaining positionals */
+        ARGH__K_GROUP,   /* help section heading */
+        ARGH__K_CUSTOM   /* your type:     --size 10M, see argh_type */
     };
 
     /* Per-option flags. Stored in argh_opt.flags, combine with |. */
@@ -107,6 +122,7 @@ extern "C"
         ARGH_NO_AUTO_HELP = 1 << 1 /* no built-in -h/--help and -V/--version */
     };
 
+    /* Values are stable: new codes are only ever added at the end. */
     typedef enum argh_err
     {
         ARGH_E_NONE = 0,
@@ -135,22 +151,22 @@ extern "C"
     {
         char short_name;       /* 'v' for -v, 0 for none */
         const char *long_name; /* "verbose" for --verbose, positional name */
-        unsigned char kind;    /* enum argh_kind */
+        unsigned char kind;    /* enum argh__kind */
         unsigned char flags;   /* enum argh_opt_flag */
         void *target;          /* variable the value is written to */
-        const void *extra;     /* ARGH_K_ENUM: NULL-terminated choices,
-                                  ARGH_K_CUSTOM: const argh_type * */
-        const char *help;      /* help text, group title for ARGH_K_GROUP */
+        const void *extra;     /* ARGH__K_ENUM: NULL-terminated choices,
+                                  ARGH__K_CUSTOM: const argh_type * */
+        const char *help;      /* help text, group title for ARGH__K_GROUP */
         const char *metavar;   /* value name in help, NULL for a default */
     } argh_opt;
 
-    /* A list of strings: repeated options (ARGH_K_LIST) or the remaining
-     * positionals (ARGH_K_REST). Strings point into argv. */
+    /* A list of strings: repeated options (ARGH__K_LIST) or the remaining
+     * positionals (ARGH__K_REST). Strings point into argv. */
     typedef struct argh_values
     {
         const char **items;
         int count;
-        int capacity; /* ARGH_K_LIST only: size of items */
+        int capacity; /* ARGH__K_LIST only: size of items */
     } argh_values;
 
     /* A value type of your own, for ARGH_CUSTOM / argh_custom. Define it once
@@ -190,20 +206,21 @@ extern "C"
         const void *targets[ARGH_RULE_MAX]; /* unused slots are NULL */
     } argh_rule;
 
-    enum argh_rule_kind
+    /* Internal: stored in argh_rule.kind by the rule macros */
+    enum argh__rule_kind
     {
-        ARGH_R_END = 0,
-        ARGH_R_AT_MOST_ONE,  /* no two of them together */
-        ARGH_R_EXACTLY_ONE,  /* one of them, and only one */
-        ARGH_R_AT_LEAST_ONE, /* one of them or more */
-        ARGH_R_REQUIRES      /* the first needs all the others */
+        ARGH__R_END = 0,
+        ARGH__R_AT_MOST_ONE,  /* no two of them together */
+        ARGH__R_EXACTLY_ONE,  /* one of them, and only one */
+        ARGH__R_AT_LEAST_ONE, /* one of them or more */
+        ARGH__R_REQUIRES      /* the first needs all the others */
     };
 
-#define ARGH_AT_MOST_ONE(...) {ARGH_R_AT_MOST_ONE, {__VA_ARGS__}}
-#define ARGH_EXACTLY_ONE(...) {ARGH_R_EXACTLY_ONE, {__VA_ARGS__}}
-#define ARGH_AT_LEAST_ONE(...) {ARGH_R_AT_LEAST_ONE, {__VA_ARGS__}}
-#define ARGH_REQUIRES(target, ...) {ARGH_R_REQUIRES, {target, __VA_ARGS__}}
-#define ARGH_RULES_END {ARGH_R_END, {NULL, NULL, NULL, NULL}}
+#define ARGH_AT_MOST_ONE(...) {ARGH__R_AT_MOST_ONE, {__VA_ARGS__}}
+#define ARGH_EXACTLY_ONE(...) {ARGH__R_EXACTLY_ONE, {__VA_ARGS__}}
+#define ARGH_AT_LEAST_ONE(...) {ARGH__R_AT_LEAST_ONE, {__VA_ARGS__}}
+#define ARGH_REQUIRES(target, ...) {ARGH__R_REQUIRES, {target, __VA_ARGS__}}
+#define ARGH_RULES_END {ARGH__R_END, {NULL, NULL, NULL, NULL}}
 
     typedef struct argh_error
     {
@@ -234,7 +251,7 @@ extern "C"
     } argh_cmd;
 
     /* Output sink for help, version and error messages. */
-    typedef void (*argh_write_fn)(void *ctx, int to_stderr, const char *text, size_t len);
+    typedef void (*argh_write_fn)(void *ctx, bool to_stderr, const char *text, size_t len);
 
     /* Checks what rules can't express. Return true if the arguments are fine,
      * or return argh_fail(p, "message"). */
@@ -285,7 +302,8 @@ extern "C"
     /* Enables -V/--version, printing "<name> <version>". */
     void argh_version(argh_parser *p, const char *version);
 
-    /* ARGH_POSIX, ARGH_NO_AUTO_HELP */
+    /* ARGH_POSIX, ARGH_NO_AUTO_HELP, combined with |. Replaces the flags set
+     * before, so pass them all in one call. */
     void argh_set_flags(argh_parser *p, unsigned flags);
 
     /* Redirects all output. The default writes to stdout and stderr, or
@@ -424,28 +442,28 @@ extern "C"
             ARGH__THIRD(__VA_ARGS__)                                                       \
     }
 
-#define ARGH_FLAG(s, l, target, ...) ARGH__OPT(s, l, ARGH_K_FLAG, bool, target, NULL, __VA_ARGS__)
-#define ARGH_COUNT(s, l, target, ...) ARGH__OPT(s, l, ARGH_K_COUNT, int, target, NULL, __VA_ARGS__)
-#define ARGH_INT(s, l, target, ...) ARGH__OPT(s, l, ARGH_K_INT, int, target, NULL, __VA_ARGS__)
-#define ARGH_LONG(s, l, target, ...) ARGH__OPT(s, l, ARGH_K_LONG, long, target, NULL, __VA_ARGS__)
+#define ARGH_FLAG(s, l, target, ...) ARGH__OPT(s, l, ARGH__K_FLAG, bool, target, NULL, __VA_ARGS__)
+#define ARGH_COUNT(s, l, target, ...) ARGH__OPT(s, l, ARGH__K_COUNT, int, target, NULL, __VA_ARGS__)
+#define ARGH_INT(s, l, target, ...) ARGH__OPT(s, l, ARGH__K_INT, int, target, NULL, __VA_ARGS__)
+#define ARGH_LONG(s, l, target, ...) ARGH__OPT(s, l, ARGH__K_LONG, long, target, NULL, __VA_ARGS__)
 #ifndef ARGH_NO_FLOAT
-#define ARGH_DOUBLE(s, l, target, ...) ARGH__OPT(s, l, ARGH_K_DOUBLE, double, target, NULL, __VA_ARGS__)
+#define ARGH_DOUBLE(s, l, target, ...) ARGH__OPT(s, l, ARGH__K_DOUBLE, double, target, NULL, __VA_ARGS__)
 #endif
-#define ARGH_STRING(s, l, target, ...) ARGH__OPT(s, l, ARGH_K_STRING, const char *, target, NULL, __VA_ARGS__)
+#define ARGH_STRING(s, l, target, ...) ARGH__OPT(s, l, ARGH__K_STRING, const char *, target, NULL, __VA_ARGS__)
 #define ARGH_ENUM(s, l, target, choices, ...) \
-    ARGH__OPT(s, l, ARGH_K_ENUM, int, target, choices, __VA_ARGS__)
-#define ARGH_LIST(s, l, target, ...) ARGH__OPT(s, l, ARGH_K_LIST, argh_values, target, NULL, __VA_ARGS__)
-#define ARGH_POS(name, target, ...) ARGH__OPT(0, name, ARGH_K_POS, const char *, target, NULL, __VA_ARGS__)
-#define ARGH_REST(name, target, ...) ARGH__OPT(0, name, ARGH_K_REST, argh_values, target, NULL, __VA_ARGS__)
+    ARGH__OPT(s, l, ARGH__K_ENUM, int, target, choices, __VA_ARGS__)
+#define ARGH_LIST(s, l, target, ...) ARGH__OPT(s, l, ARGH__K_LIST, argh_values, target, NULL, __VA_ARGS__)
+#define ARGH_POS(name, target, ...) ARGH__OPT(0, name, ARGH__K_POS, const char *, target, NULL, __VA_ARGS__)
+#define ARGH_REST(name, target, ...) ARGH__OPT(0, name, ARGH__K_REST, argh_values, target, NULL, __VA_ARGS__)
 /* No type check here: the argh_type decides what target points to */
 #define ARGH_CUSTOM(s, l, target, type, ...)                                                        \
     {                                                                                               \
-        (char)(s), (l), (unsigned char)ARGH_K_CUSTOM, (unsigned char)(ARGH__SECOND(__VA_ARGS__)),   \
+        (char)(s), (l), (unsigned char)ARGH__K_CUSTOM, (unsigned char)(ARGH__SECOND(__VA_ARGS__)),   \
             (void *)(target), (const void *)(type), ARGH__FIRST(__VA_ARGS__),                       \
             ARGH__THIRD(__VA_ARGS__)                                                                \
     }
-#define ARGH_GROUP(title) {0, NULL, (unsigned char)ARGH_K_GROUP, 0, NULL, NULL, (title), NULL}
-#define ARGH_END {0, NULL, (unsigned char)ARGH_K_END, 0, NULL, NULL, NULL, NULL}
+#define ARGH_GROUP(title) {0, NULL, (unsigned char)ARGH__K_GROUP, 0, NULL, NULL, (title), NULL}
+#define ARGH_END {0, NULL, (unsigned char)ARGH__K_END, 0, NULL, NULL, NULL, NULL}
 
     /* ============================================================================
      * Command macros
@@ -527,7 +545,7 @@ extern "C"
  * bitset. The _T form takes the slot counter name so loops can be nested. */
 #define ARGH__EACH_T(p, t, o, idx)                                                     \
     for (int t = 0, idx = 0; t < argh__slot_count(p); t++)                             \
-        for (const argh_opt *o = argh__slot(p, t); o->kind != ARGH_K_END; o++, idx++)
+        for (const argh_opt *o = argh__slot(p, t); o->kind != ARGH__K_END; o++, idx++)
 #define ARGH__EACH(p, o, idx) ARGH__EACH_T(p, argh__t, o, idx)
 
     static const argh_opt argh__empty_table[1] = {ARGH_END};
@@ -584,7 +602,7 @@ extern "C"
      * Output helpers
      * ------------------------------------------------------------------------ */
 
-    static void argh__stdio_write(void *ctx, int to_stderr, const char *text, size_t len)
+    static void argh__stdio_write(void *ctx, bool to_stderr, const char *text, size_t len)
     {
         (void)ctx;
 #ifdef ARGH_NO_STDIO
@@ -596,13 +614,13 @@ extern "C"
 #endif
     }
 
-    static void argh__outn(const argh_parser *p, int err, const char *s, size_t n)
+    static void argh__outn(const argh_parser *p, bool err, const char *s, size_t n)
     {
         if (s && n)
             p->argh__write(p->argh__write_ctx, err, s, n);
     }
 
-    static void argh__out(const argh_parser *p, int err, const char *s)
+    static void argh__out(const argh_parser *p, bool err, const char *s)
     {
         if (s)
             argh__outn(p, err, s, strlen(s));
@@ -718,20 +736,20 @@ extern "C"
 
     static bool argh__is_option_kind(int kind)
     {
-        return kind != ARGH_K_POS && kind != ARGH_K_REST && kind != ARGH_K_GROUP;
+        return kind != ARGH__K_POS && kind != ARGH__K_REST && kind != ARGH__K_GROUP;
     }
 
     static bool argh__takes_value(const argh_opt *o)
     {
         switch (o->kind)
         {
-        case ARGH_K_INT:
-        case ARGH_K_LONG:
-        case ARGH_K_DOUBLE:
-        case ARGH_K_STRING:
-        case ARGH_K_ENUM:
-        case ARGH_K_LIST:
-        case ARGH_K_CUSTOM:
+        case ARGH__K_INT:
+        case ARGH__K_LONG:
+        case ARGH__K_DOUBLE:
+        case ARGH__K_STRING:
+        case ARGH__K_ENUM:
+        case ARGH__K_LIST:
+        case ARGH__K_CUSTOM:
             return true;
         default:
             return false;
@@ -875,7 +893,7 @@ extern "C"
 
         switch (o->kind)
         {
-        case ARGH_K_FLAG:
+        case ARGH__K_FLAG:
             if (!v)
             {
                 *(bool *)o->target = !negated;
@@ -885,31 +903,31 @@ extern "C"
                 return e;
             *(bool *)o->target = b;
             return ARGH_E_NONE;
-        case ARGH_K_COUNT:
+        case ARGH__K_COUNT:
             if (*(int *)o->target < INT_MAX)
                 (*(int *)o->target)++;
             return ARGH_E_NONE;
-        case ARGH_K_INT:
+        case ARGH__K_INT:
             if ((e = argh__parse_long(v, INT_MIN, INT_MAX, &l)) != ARGH_E_NONE)
                 return e;
             *(int *)o->target = (int)l;
             return ARGH_E_NONE;
-        case ARGH_K_LONG:
+        case ARGH__K_LONG:
             if ((e = argh__parse_long(v, LONG_MIN, LONG_MAX, &l)) != ARGH_E_NONE)
                 return e;
             *(long *)o->target = l;
             return ARGH_E_NONE;
 #ifndef ARGH_NO_FLOAT
-        case ARGH_K_DOUBLE:
+        case ARGH__K_DOUBLE:
             if ((e = argh__parse_double(v, &d)) != ARGH_E_NONE)
                 return e;
             *(double *)o->target = d;
             return ARGH_E_NONE;
 #endif
-        case ARGH_K_STRING:
+        case ARGH__K_STRING:
             *(const char **)o->target = v;
             return ARGH_E_NONE;
-        case ARGH_K_ENUM:
+        case ARGH__K_ENUM:
         {
             const char *const *choices = (const char *const *)o->extra;
             int i;
@@ -923,7 +941,7 @@ extern "C"
             }
             return ARGH_E_INVALID_VALUE;
         }
-        case ARGH_K_LIST:
+        case ARGH__K_LIST:
         {
             argh_values *list = (argh_values *)o->target;
             if (list->count >= list->capacity)
@@ -931,7 +949,7 @@ extern "C"
             list->items[list->count++] = v;
             return ARGH_E_NONE;
         }
-        case ARGH_K_CUSTOM:
+        case ARGH__K_CUSTOM:
             *reason = ((const argh_type *)o->extra)->parse(v, o->target);
             return *reason ? ARGH_E_INVALID_VALUE : ARGH_E_NONE;
         default:
@@ -1106,7 +1124,7 @@ extern "C"
                 if (!o && len > 3 && strncmp(name, "no-", 3) == 0)
                 {
                     o = argh__find_long(p, name + 3, len - 3, &index);
-                    if (o && o->kind == ARGH_K_FLAG && (o->flags & ARGH_NEGATABLE))
+                    if (o && o->kind == ARGH__K_FLAG && (o->flags & ARGH_NEGATABLE))
                         negated = true;
                     else
                         o = NULL;
@@ -1122,7 +1140,7 @@ extern "C"
                     else
                         rc = argh__fail(p, ARGH_E_MISSING_VALUE, i, o, NULL, 0);
                 }
-                else if (eq && (o->kind != ARGH_K_FLAG || negated))
+                else if (eq && (o->kind != ARGH__K_FLAG || negated))
                     rc = argh__fail(p, ARGH_E_UNEXPECTED_VALUE, i, o, eq + 1, 0);
                 else if (eq)
                     v = eq + 1;
@@ -1188,13 +1206,13 @@ extern "C"
         return ARGH__S_OK;
     }
 
-    /* Hands positionals to ARGH_K_POS / ARGH_K_REST, checks required ones */
+    /* Hands positionals to ARGH__K_POS / ARGH__K_REST, checks required ones */
     static int argh__assign_positionals(argh_parser *p, char **argv, int count)
     {
         int used = 0;
         ARGH__EACH(p, o, index)
         {
-            if (o->kind == ARGH_K_POS)
+            if (o->kind == ARGH__K_POS)
             {
                 if (used < count)
                 {
@@ -1206,7 +1224,7 @@ extern "C"
                     return argh__fail(p, ARGH_E_MISSING_REQUIRED, -1, o, NULL, 0);
                 }
             }
-            else if (o->kind == ARGH_K_REST)
+            else if (o->kind == ARGH__K_REST)
             {
                 argh_values *rest = (argh_values *)o->target;
                 rest->items = (const char **)(void *)(argv + 1 + used);
@@ -1227,8 +1245,8 @@ extern "C"
 #ifndef NDEBUG
     static bool argh__table_has_target(const argh_opt *o, const void *target)
     {
-        for (; o && o->kind != ARGH_K_END; o++)
-            if (o->target == target && o->kind != ARGH_K_GROUP)
+        for (; o && o->kind != ARGH__K_END; o++)
+            if (o->target == target && o->kind != ARGH__K_GROUP)
                 return true;
         return false;
     }
@@ -1263,7 +1281,7 @@ extern "C"
     static int argh__check_rules(argh_parser *p)
     {
         const argh_rule *r;
-        for (r = p->argh__rules; r && r->kind != ARGH_R_END; r++)
+        for (r = p->argh__rules; r && r->kind != ARGH__R_END; r++)
         {
             int given = 0, count = 0, i, index;
             bool active = true;
@@ -1301,21 +1319,21 @@ extern "C"
             p->argh__error.rule = r;
             switch (r->kind)
             {
-            case ARGH_R_AT_MOST_ONE:
+            case ARGH__R_AT_MOST_ONE:
                 if (given > 1)
                     return argh__fail(p, ARGH_E_CONFLICT, -1, first_given, NULL, 0);
                 break;
-            case ARGH_R_EXACTLY_ONE:
+            case ARGH__R_EXACTLY_ONE:
                 if (given > 1)
                     return argh__fail(p, ARGH_E_CONFLICT, -1, first_given, NULL, 0);
                 if (given == 0)
                     return argh__fail(p, ARGH_E_ONE_REQUIRED, -1, NULL, NULL, 0);
                 break;
-            case ARGH_R_AT_LEAST_ONE:
+            case ARGH__R_AT_LEAST_ONE:
                 if (given == 0)
                     return argh__fail(p, ARGH_E_ONE_REQUIRED, -1, NULL, NULL, 0);
                 break;
-            case ARGH_R_REQUIRES:
+            case ARGH__R_REQUIRES:
             {
                 int head_index;
                 argh__find_target(p, r->targets[0], &head_index);
@@ -1354,8 +1372,8 @@ extern "C"
 #ifndef ARGH_NO_COMMANDS
     static bool argh__has_positionals(const argh_opt *o)
     {
-        for (; o && o->kind != ARGH_K_END; o++)
-            if (o->kind == ARGH_K_POS || o->kind == ARGH_K_REST)
+        for (; o && o->kind != ARGH__K_END; o++)
+            if (o->kind == ARGH__K_POS || o->kind == ARGH__K_REST)
                 return true;
         return false;
     }
@@ -1384,7 +1402,7 @@ extern "C"
                 /* -h/--help stay reserved everywhere; -V/--version may be
                  * redefined by a command */
                 const argh_opt *o;
-                for (o = a->opts; o && o->kind != ARGH_K_END; o++)
+                for (o = a->opts; o && o->kind != ARGH__K_END; o++)
                     if (argh__is_option_kind(o->kind) &&
                         (o->short_name == 'h' || (o->long_name && strcmp(o->long_name, "help") == 0)))
                         return argh__config_error(p, "name reserved for help, see ARGH_NO_AUTO_HELP", o);
@@ -1553,11 +1571,11 @@ extern "C"
                 if (clash)
                     return argh__config_error(p, "name reserved for help/version, see ARGH_NO_AUTO_HELP", o);
             }
-            if (!o->target && o->kind != ARGH_K_GROUP)
+            if (!o->target && o->kind != ARGH__K_GROUP)
                 return argh__config_error(p, "option has no target variable", o);
-            if (o->kind == ARGH_K_CUSTOM && (!o->extra || !((const argh_type *)o->extra)->parse))
+            if (o->kind == ARGH__K_CUSTOM && (!o->extra || !((const argh_type *)o->extra)->parse))
                 return argh__config_error(p, "custom option has no argh_type with a parse function", o);
-            if (o->kind == ARGH_K_ENUM && !o->extra)
+            if (o->kind == ARGH__K_ENUM && !o->extra)
                 return argh__config_error(p, "enum option has no choices", o);
         }
         if (total > ARGH_MAX_OPTS)
@@ -1624,7 +1642,7 @@ extern "C"
     }
 
     /* "tool remote add": program name plus the selected commands */
-    static void argh__out_path(const argh_parser *p, int err)
+    static void argh__out_path(const argh_parser *p, bool err)
     {
         int d;
         argh__out(p, err, p->argh__name);
@@ -1638,7 +1656,7 @@ extern "C"
     }
 
 #ifndef ARGH_NO_COMMANDS
-    static void argh__print_commands(const argh_parser *p, int err, const argh_cmd *cmds)
+    static void argh__print_commands(const argh_parser *p, bool err, const argh_cmd *cmds)
     {
         const argh_cmd *c;
         int width = 0;
@@ -1770,66 +1788,66 @@ extern "C"
 
     argh_opt *argh_flag(argh_parser *p, char s, const char *l, bool *target, const char *help)
     {
-        return argh__add(p, s, l, ARGH_K_FLAG, target, NULL, help);
+        return argh__add(p, s, l, ARGH__K_FLAG, target, NULL, help);
     }
 
     argh_opt *argh_count(argh_parser *p, char s, const char *l, int *target, const char *help)
     {
-        return argh__add(p, s, l, ARGH_K_COUNT, target, NULL, help);
+        return argh__add(p, s, l, ARGH__K_COUNT, target, NULL, help);
     }
 
     argh_opt *argh_int(argh_parser *p, char s, const char *l, int *target, const char *help)
     {
-        return argh__add(p, s, l, ARGH_K_INT, target, NULL, help);
+        return argh__add(p, s, l, ARGH__K_INT, target, NULL, help);
     }
 
     argh_opt *argh_long(argh_parser *p, char s, const char *l, long *target, const char *help)
     {
-        return argh__add(p, s, l, ARGH_K_LONG, target, NULL, help);
+        return argh__add(p, s, l, ARGH__K_LONG, target, NULL, help);
     }
 
 #ifndef ARGH_NO_FLOAT
     argh_opt *argh_double(argh_parser *p, char s, const char *l, double *target, const char *help)
     {
-        return argh__add(p, s, l, ARGH_K_DOUBLE, target, NULL, help);
+        return argh__add(p, s, l, ARGH__K_DOUBLE, target, NULL, help);
     }
 #endif
 
     argh_opt *argh_string(argh_parser *p, char s, const char *l, const char **target, const char *help)
     {
-        return argh__add(p, s, l, ARGH_K_STRING, (void *)target, NULL, help);
+        return argh__add(p, s, l, ARGH__K_STRING, (void *)target, NULL, help);
     }
 
     argh_opt *argh_enum(argh_parser *p, char s, const char *l, int *target,
                         const char *const *choices, const char *help)
     {
-        return argh__add(p, s, l, ARGH_K_ENUM, target, choices, help);
+        return argh__add(p, s, l, ARGH__K_ENUM, target, choices, help);
     }
 
     argh_opt *argh_list(argh_parser *p, char s, const char *l, argh_values *target, const char *help)
     {
-        return argh__add(p, s, l, ARGH_K_LIST, target, NULL, help);
+        return argh__add(p, s, l, ARGH__K_LIST, target, NULL, help);
     }
 
     argh_opt *argh_pos(argh_parser *p, const char *name, const char **target, const char *help)
     {
-        return argh__add(p, 0, name, ARGH_K_POS, (void *)target, NULL, help);
+        return argh__add(p, 0, name, ARGH__K_POS, (void *)target, NULL, help);
     }
 
     argh_opt *argh_rest(argh_parser *p, const char *name, argh_values *target, const char *help)
     {
-        return argh__add(p, 0, name, ARGH_K_REST, target, NULL, help);
+        return argh__add(p, 0, name, ARGH__K_REST, target, NULL, help);
     }
 
     argh_opt *argh_custom(argh_parser *p, char s, const char *l, void *target, const argh_type *type,
                           const char *help)
     {
-        return argh__add(p, s, l, ARGH_K_CUSTOM, target, type, help);
+        return argh__add(p, s, l, ARGH__K_CUSTOM, target, type, help);
     }
 
     argh_opt *argh_group(argh_parser *p, const char *title)
     {
-        return argh__add(p, 0, NULL, ARGH_K_GROUP, NULL, NULL, title);
+        return argh__add(p, 0, NULL, ARGH__K_GROUP, NULL, NULL, title);
     }
 
     static argh_opt *argh__set_flag(argh_opt *opt, int flag)
@@ -1927,7 +1945,7 @@ extern "C"
     {
         ARGH__EACH(p, o, i)
         {
-            if (o->target == target && o->kind != ARGH_K_GROUP)
+            if (o->target == target && o->kind != ARGH__K_GROUP)
             {
                 *index = i;
                 return o;
@@ -1983,7 +2001,7 @@ extern "C"
      * positionals. used_short: the short name the user typed, if any. */
     static void argh__sb_opt_name(argh__sb *b, const argh_opt *o, char used_short)
     {
-        if (o && (o->kind == ARGH_K_POS || o->kind == ARGH_K_REST))
+        if (o && (o->kind == ARGH__K_POS || o->kind == ARGH__K_REST))
         {
             argh__sb_char(b, '<');
             argh__sb_put(b, o->long_name);
@@ -2010,17 +2028,17 @@ extern "C"
     {
         switch (o->kind)
         {
-        case ARGH_K_INT:
-        case ARGH_K_LONG:
+        case ARGH__K_INT:
+        case ARGH__K_LONG:
             argh__sb_put(b, "expected an integer");
             break;
-        case ARGH_K_DOUBLE:
+        case ARGH__K_DOUBLE:
             argh__sb_put(b, "expected a number");
             break;
-        case ARGH_K_FLAG:
+        case ARGH__K_FLAG:
             argh__sb_put(b, "expected true or false");
             break;
-        case ARGH_K_ENUM:
+        case ARGH__K_ENUM:
         {
             const char *const *choices = (const char *const *)o->extra;
             int i;
@@ -2084,7 +2102,7 @@ extern "C"
             argh__sb_put(&b, "' for '");
             argh__sb_opt_name(&b, e->opt, e->short_name);
             argh__sb_put(&b, "': ");
-            if (e->opt->kind == ARGH_K_CUSTOM && e->detail)
+            if (e->opt->kind == ARGH__K_CUSTOM && e->detail)
                 argh__sb_put(&b, e->detail);
             else
                 argh__sb_expected(&b, e->opt);
@@ -2120,7 +2138,7 @@ extern "C"
             argh__sb_char(&b, '\'');
             break;
         case ARGH_E_MISSING_REQUIRED:
-            argh__sb_put(&b, e->opt && (e->opt->kind == ARGH_K_POS || e->opt->kind == ARGH_K_REST)
+            argh__sb_put(&b, e->opt && (e->opt->kind == ARGH__K_POS || e->opt->kind == ARGH__K_REST)
                                  ? "missing required argument '"
                                  : "missing required option '");
             argh__sb_opt_name(&b, e->opt, 0);
@@ -2230,20 +2248,20 @@ extern "C"
         }
         switch (o->kind)
         {
-        case ARGH_K_INT:
-        case ARGH_K_LONG:
+        case ARGH__K_INT:
+        case ARGH__K_LONG:
             argh__sb_put(b, "<n>");
             break;
-        case ARGH_K_DOUBLE:
+        case ARGH__K_DOUBLE:
             argh__sb_put(b, "<x>");
             break;
-        case ARGH_K_CUSTOM:
+        case ARGH__K_CUSTOM:
         {
             const argh_type *t = (const argh_type *)o->extra;
             argh__sb_put(b, (t && t->metavar) ? t->metavar : "<value>");
             break;
         }
-        case ARGH_K_ENUM:
+        case ARGH__K_ENUM:
         {
             const char *const *choices = (const char *const *)o->extra;
             int i;
@@ -2272,14 +2290,14 @@ extern "C"
         b.len = 0;
         buf[0] = '\0';
 
-        if (o->kind == ARGH_K_POS)
+        if (o->kind == ARGH__K_POS)
         {
             argh__sb_char(&b, (o->flags & ARGH_OPTIONAL) ? '[' : '<');
             argh__sb_put(&b, o->long_name);
             argh__sb_char(&b, (o->flags & ARGH_OPTIONAL) ? ']' : '>');
             return b.len;
         }
-        if (o->kind == ARGH_K_REST)
+        if (o->kind == ARGH__K_REST)
         {
             argh__sb_char(&b, (o->flags & ARGH_REQUIRED) ? '<' : '[');
             argh__sb_put(&b, o->long_name);
@@ -2300,7 +2318,7 @@ extern "C"
         }
         if (o->long_name)
         {
-            argh__sb_put(&b, (o->kind == ARGH_K_FLAG && (o->flags & ARGH_NEGATABLE)) ? "--[no-]" : "--");
+            argh__sb_put(&b, (o->kind == ARGH__K_FLAG && (o->flags & ARGH_NEGATABLE)) ? "--[no-]" : "--");
             argh__sb_put(&b, o->long_name);
         }
         if (argh__takes_value(o))
@@ -2324,14 +2342,14 @@ extern "C"
         }
         switch (o->kind)
         {
-        case ARGH_K_INT:
+        case ARGH__K_INT:
             text = argh__fmt_long(num, *(const int *)o->target);
             break;
-        case ARGH_K_LONG:
+        case ARGH__K_LONG:
             text = argh__fmt_long(num, *(const long *)o->target);
             break;
 #ifndef ARGH_NO_FLOAT
-        case ARGH_K_DOUBLE:
+        case ARGH__K_DOUBLE:
 #ifdef ARGH_NO_STDIO
             text = argh__fmt_double(num, *(const double *)o->target);
 #else
@@ -2340,10 +2358,10 @@ extern "C"
 #endif
             break;
 #endif
-        case ARGH_K_STRING:
+        case ARGH__K_STRING:
             text = *(const char *const *)o->target;
             break;
-        case ARGH_K_CUSTOM:
+        case ARGH__K_CUSTOM:
         {
             const argh_type *t = (const argh_type *)o->extra;
             num[0] = '\0';
@@ -2354,7 +2372,7 @@ extern "C"
             }
             break;
         }
-        case ARGH_K_ENUM:
+        case ARGH__K_ENUM:
         {
             const char *const *choices = (const char *const *)o->extra;
             int v = *(const int *)o->target;
@@ -2414,13 +2432,13 @@ extern "C"
         {
             size_t len;
             (void)index;
-            if (o->kind == ARGH_K_GROUP || (o->flags & ARGH_HIDDEN))
+            if (o->kind == ARGH__K_GROUP || (o->flags & ARGH_HIDDEN))
                 continue;
             if (slot < own_slot && !argh__is_option_kind(o->kind))
                 continue;
             if (slot < own_slot)
                 has_globals = true;
-            if (o->kind == ARGH_K_POS || o->kind == ARGH_K_REST)
+            if (o->kind == ARGH__K_POS || o->kind == ARGH__K_REST)
                 has_positionals = true;
             len = argh__left_column(o, left, sizeof(left));
             if ((int)len > column && len <= ARGH__HELP_COLUMN_MAX)
@@ -2440,7 +2458,7 @@ extern "C"
         ARGH__EACH_T(p, slot, o, index)
         {
             (void)index;
-            if (slot >= own_slot && (o->kind == ARGH_K_POS || o->kind == ARGH_K_REST))
+            if (slot >= own_slot && (o->kind == ARGH__K_POS || o->kind == ARGH__K_REST))
             {
                 size_t len = argh__left_column(o, left, sizeof(left));
                 argh__out(p, 0, " ");
@@ -2465,7 +2483,7 @@ extern "C"
             ARGH__EACH_T(p, slot, o, index)
             {
                 (void)index;
-                if (slot >= own_slot && (o->kind == ARGH_K_POS || o->kind == ARGH_K_REST) &&
+                if (slot >= own_slot && (o->kind == ARGH__K_POS || o->kind == ARGH__K_REST) &&
                     !(o->flags & ARGH_HIDDEN))
                 {
                     size_t len = argh__left_column(o, left, sizeof(left));
@@ -2487,7 +2505,7 @@ extern "C"
             (void)index;
             if (slot < own_slot)
                 continue;
-            if (o->kind == ARGH_K_GROUP)
+            if (o->kind == ARGH__K_GROUP)
             {
                 argh__out(p, 0, "\n");
                 argh__out(p, 0, o->help);

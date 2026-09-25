@@ -415,7 +415,7 @@ argh_format_error(&p, message, sizeof message); /* same text, no stdio needed */
 To send all output somewhere else (a log, a UART, a test buffer), set a writer:
 
 ```c
-static void my_writer(void *ctx, int to_stderr, const char *text, size_t len)
+static void my_writer(void *ctx, bool to_stderr, const char *text, size_t len)
 {
     /* write len bytes of text */
 }
@@ -433,7 +433,7 @@ Define two macros and give argh a writer:
 #define ARGH_IMPLEMENTATION
 #include "argh.h"
 
-static void uart_write(void *ctx, int to_stderr, const char *text, size_t len)
+static void uart_write(void *ctx, bool to_stderr, const char *text, size_t len)
 {
     while (len--)
         uart_putc(*text++);
@@ -471,7 +471,7 @@ argh is strict where other parsers guess:
 
 ### Configuration
 
-Define before including `argh.h`:
+Define before including `argh.h`, the same way in every file that includes it. The simplest way is a compiler flag such as `-DARGH_BUILDER_CAP=8`, or one header of your own that sets them and includes `argh.h`:
 
 | Macro              | Default | Meaning                                                                        |
 | ------------------ | ------: | ------------------------------------------------------------------------------ |
@@ -485,7 +485,9 @@ Define before including `argh.h`:
 | `ARGH_NO_FLOAT`    |         | Define to remove `argh_double` and floating point (27 KB on newlib firmware)   |
 | `NDEBUG`           |         | The usual release flag: skips the slower checks of your definitions            |
 
-Sizes are for Linux GCC. Mistakes in the definitions, such as two options with the same name or a missing variable, are reported by `argh_parse` as `ARGH_E_CONFIG`. The checks for duplicate names, for the command tree and for variables in rules run only in builds without `NDEBUG`.
+Sizes are for Linux GCC. The four size settings and `ARGH_NO_COMMANDS` change the size of `argh_parser`, so files built with different values would corrupt memory. argh.h catches that at build time: they fail to link, with a name like `argh_init_settings_b8_o64_t8_d4_cmd` in the error. Define the size settings as plain numbers.
+
+Mistakes in the definitions, such as two options with the same name or a missing variable, are reported by `argh_parse` as `ARGH_E_CONFIG`. The checks for duplicate names, for the command tree and for variables in rules run only in builds without `NDEBUG`.
 
 ## API reference
 
@@ -497,7 +499,7 @@ Everything public in `argh.h`. Names marked *commands* are missing with `ARGH_NO
 /* Setup */
 void argh_init(argh_parser *p, const char *name, const char *about);  /* name NULL: from argv[0] */
 void argh_version(argh_parser *p, const char *version);                /* enables -V/--version */
-void argh_set_flags(argh_parser *p, unsigned flags);                   /* ARGH_POSIX, ARGH_NO_AUTO_HELP */
+void argh_set_flags(argh_parser *p, unsigned flags);                   /* replaces them: ARGH_POSIX | ARGH_NO_AUTO_HELP */
 void argh_set_writer(argh_parser *p, argh_write_fn write, void *ctx);  /* NULL: back to the default */
 void argh_table(argh_parser *p, const argh_opt *table);                /* up to ARGH_MAX_TABLES */
 void argh_commands(argh_parser *p, const argh_cmd *commands);          /* commands */
@@ -589,13 +591,15 @@ typedef struct argh_error {
     char short_name;         /* offending short option, if any */
 } argh_error;
 
-typedef void (*argh_write_fn)(void *ctx, int to_stderr, const char *text, size_t len);
+typedef void (*argh_write_fn)(void *ctx, bool to_stderr, const char *text, size_t len);
 typedef bool (*argh_validate_fn)(argh_parser *p, void *ctx);
 ```
 
-`argh_parser`, `argh_opt`, `argh_cmd` and `argh_rule` are plain structs: create them with the functions and macros above, and treat their fields as internal. The flags come from `enum argh_opt_flag` and `enum argh_parser_flag`; `enum argh_kind` and `enum argh_rule_kind` are what the macros store in `argh_opt` and `argh_rule`. `ARGH_RULE_MAX` (4) is the most variables one rule can take.
+`argh_parser`, `argh_opt`, `argh_cmd` and `argh_rule` are plain structs: create them with the functions and macros above, and treat their fields as internal. The flags come from `enum argh_opt_flag` and `enum argh_parser_flag`. `ARGH_RULE_MAX` (4) is the most variables one rule can take.
 
 ### Error codes
+
+The values are stable: new codes are only ever added at the end, so it is safe to store or log them.
 
 | Code                         | Example                                                  |
 | ---------------------------- | -------------------------------------------------------- |

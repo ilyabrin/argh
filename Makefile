@@ -39,6 +39,9 @@ test: test_argh$(EXE) nostdio_check$(EXE) fuzz_replay$(EXE)
 	./test_argh$(EXE)
 	./nostdio_check$(EXE)
 	./fuzz_replay$(EXE) tests/fuzz/*
+	@if $(CC) $(CFLAGS) -o settings_mismatch$(EXE) tests/settings_main.c tests/settings_impl.c >/dev/null 2>&1; \
+	then echo "FAIL: files with different settings linked"; exit 1; \
+	else echo "files with different settings: rejected at link time"; fi
 
 test_argh$(EXE): tests/test_argh.c argh.h
 	$(CC) $(CFLAGS) -o $@ tests/test_argh.c $(LDFLAGS)
