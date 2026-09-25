@@ -587,9 +587,14 @@ argh makes zero heap allocations. Details, memory, code size and the method: [BE
 ## Running the tests
 
 ```sh
-make test     # test suite
-make cxx      # check that argh.h compiles as C++
+make test       # test suite, a build without stdio, the saved fuzz inputs
+make smoke      # run the examples and check their output
+make cxx        # check that argh.h compiles as C++
+make fuzz       # fuzz the parser with libFuzzer (needs clang), 60 s by default
+make size-arm   # flash added to ARM firmware, checked against budgets
 ```
+
+CI runs all of these on Linux, macOS and Windows (GCC, Clang, MinGW, MSVC), plus AddressSanitizer and UndefinedBehaviorSanitizer and 2 minutes of fuzzing on every pull request. The fuzz target ([tests/fuzz_argh.c](tests/fuzz_argh.c)) feeds random command lines to a parser that uses every feature, and checks that `argv` is only reordered, that stored strings point into `argv`, and that error messages are consistent.
 
 ## Contributing
 

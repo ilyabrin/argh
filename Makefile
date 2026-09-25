@@ -2,7 +2,8 @@
 # Works with GCC, Clang and MinGW on Linux, macOS and Windows.
 #
 #   make            build tests and examples
-#   make test       build and run tests, including a build without stdio
+#   make test       build and run tests, a build without stdio, the fuzz corpus
+#   make fuzz       fuzz argh_parse with libFuzzer (clang), FUZZ_TIME seconds
 #   make examples   build the examples in examples/
 #   make smoke      run the examples and check their output
 #   make bench      run benchmarks (speed and code size)
@@ -30,13 +31,14 @@ endif
 EXAMPLES = examples/wc$(EXE) examples/logship$(EXE) examples/pkg/pkg$(EXE)
 PKG_SRC  = examples/pkg/main.c examples/pkg/install.c examples/pkg/remote.c examples/pkg/exec.c
 
-.PHONY: all test examples smoke bench size-arm cxx clean
+.PHONY: all test examples smoke bench size-arm fuzz cxx clean
 
 all: test_argh$(EXE) $(EXAMPLES)
 
-test: test_argh$(EXE) nostdio_check$(EXE)
+test: test_argh$(EXE) nostdio_check$(EXE) fuzz_replay$(EXE)
 	./test_argh$(EXE)
 	./nostdio_check$(EXE)
+	./fuzz_replay$(EXE) tests/fuzz/*
 
 test_argh$(EXE): tests/test_argh.c argh.h
 	$(CC) $(CFLAGS) -o $@ tests/test_argh.c $(LDFLAGS)
@@ -44,6 +46,18 @@ test_argh$(EXE): tests/test_argh.c argh.h
 # argh.h built without <stdio.h>, as firmware would use it
 nostdio_check$(EXE): tests/nostdio_check.c argh.h
 	$(CC) $(CFLAGS) -o $@ tests/nostdio_check.c $(LDFLAGS)
+
+# The fuzz target run once on each saved input, with any compiler
+fuzz_replay$(EXE): tests/fuzz_argh.c argh.h
+	$(CC) $(CFLAGS) -DFUZZ_REPLAY -o $@ tests/fuzz_argh.c $(LDFLAGS)
+
+# New inputs go to fuzz_corpus/; tests/fuzz holds the seeds
+FUZZ_CC   ?= clang
+FUZZ_TIME ?= 60
+fuzz: tests/fuzz_argh.c argh.h
+	$(FUZZ_CC) -std=c99 -g -O1 -fsanitize=fuzzer,address,undefined -fno-sanitize-recover=all -o fuzz_argh tests/fuzz_argh.c
+	mkdir -p fuzz_corpus
+	./fuzz_argh -max_total_time=$(FUZZ_TIME) -max_len=1024 fuzz_corpus tests/fuzz
 
 examples: $(EXAMPLES)
 
@@ -74,4 +88,4 @@ cxx: tests/cxx_check.cpp argh.h
 	$(CXX) -std=c++11 -Wall -Wextra -Wpedantic -Werror -o cxx_check$(EXE) tests/cxx_check.cpp
 
 clean:
-	-$(RM) $(call fixpath,test_argh$(EXE) nostdio_check$(EXE) bench_parse$(EXE) cxx_check$(EXE) $(EXAMPLES))
+	-$(RM) $(call fixpath,test_argh$(EXE) nostdio_check$(EXE) fuzz_replay$(EXE) bench_parse$(EXE) cxx_check$(EXE) $(EXAMPLES))
