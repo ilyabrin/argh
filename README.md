@@ -86,6 +86,8 @@ $ echo $?
 
 `#define ARGH_IMPLEMENTATION` goes in exactly one `.c` file. Other files just `#include "argh.h"`.
 
+For a program in one file, or a library that ships its own copy of argh.h, `#define ARGH_STATIC` instead: the implementation is included and every function is `static`, so two copies in one program never clash.
+
 ## Guide
 
 ### Option types
@@ -483,6 +485,7 @@ Define before including `argh.h`, the same way in every file that includes it. T
 | `ARGH_NO_COMMANDS` |         | Define to remove commands (about 3.0 KB) if you don't use them                 |
 | `ARGH_NO_STDIO`    |         | Define to build without `<stdio.h>`, see [Microcontrollers](#microcontrollers) |
 | `ARGH_NO_FLOAT`    |         | Define to remove `argh_double` and floating point (27 KB on newlib firmware)   |
+| `ARGH_STATIC`      |         | Define to include the implementation with every function `static`              |
 | `NDEBUG`           |         | The usual release flag: skips the slower checks of your definitions            |
 
 Sizes are for Linux GCC. The four size settings and `ARGH_NO_COMMANDS` change the size of `argh_parser`, so files built with different values would corrupt memory. argh.h catches that at build time: they fail to link, with a name like `argh_init_settings_b8_o64_t8_d4_cmd` in the error. Define the size settings as plain numbers.
@@ -565,6 +568,10 @@ ARGH_RULES_END
 /* A list backed by a fixed array */
 const char *buf[8];
 argh_values list = ARGH_VALUES(buf);
+
+/* The version of argh.h, for compile-time checks */
+ARGH_VERSION_MAJOR    ARGH_VERSION_MINOR    ARGH_VERSION_PATCH
+ARGH_VERSION          /* "0.4.0" */
 ```
 
 Option flags, combined with `|`: `ARGH_REQUIRED`, `ARGH_OPTIONAL` (positionals), `ARGH_HIDDEN`, `ARGH_NEGATABLE` (flags), `ARGH_ONCE`. Parser flags: `ARGH_POSIX`, `ARGH_NO_AUTO_HELP`.

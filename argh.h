@@ -11,6 +11,8 @@
  *       #define ARGH_IMPLEMENTATION
  *       #include "argh.h"
  *   Everywhere else just #include "argh.h".
+ *   Or #define ARGH_STATIC before including: everything in this one file,
+ *   all functions static.
  *
  * EXAMPLE
  *   int main(int argc, char **argv) {
@@ -37,6 +39,7 @@
  *   ARGH_NO_COMMANDS  no commands: smaller code for programs without them
  *   ARGH_NO_STDIO     no <stdio.h>: output goes only to argh_set_writer()
  *   ARGH_NO_FLOAT     no argh_double: no strtod and no floating point
+ *   ARGH_STATIC       all functions static, implementation included
  *
  * LICENSE: MIT (see end of file)
  */
@@ -46,6 +49,31 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+
+/* The version of this file, to check at compile time:
+ *     #if ARGH_VERSION_MAJOR < 1
+ *     #error "needs argh.h 1.0 or later"
+ *     #endif */
+#define ARGH_VERSION_MAJOR 0
+#define ARGH_VERSION_MINOR 4
+#define ARGH_VERSION_PATCH 0
+#define ARGH_VERSION "0.4.0"
+
+/* ARGH_STATIC: every function is static and the implementation is included,
+ * for a program in one file or a library that embeds its own copy of argh.h
+ * without clashing with another one. */
+#ifdef ARGH_STATIC
+#ifndef ARGH_IMPLEMENTATION
+#define ARGH_IMPLEMENTATION
+#endif
+#if defined(__GNUC__) || defined(__clang__)
+#define ARGH__DEF static __attribute__((unused))
+#else
+#define ARGH__DEF static
+#endif
+#else
+#define ARGH__DEF extern
+#endif
 
 #ifndef ARGH_BUILDER_CAP
 #define ARGH_BUILDER_CAP 32
@@ -297,28 +325,28 @@ extern "C"
 
     /* name: program name for help and errors, NULL to take it from argv[0].
      * about: one-line description for help, can be NULL. */
-    void argh_init(argh_parser *p, const char *name, const char *about);
+    ARGH__DEF void argh_init(argh_parser *p, const char *name, const char *about);
 
     /* Enables -V/--version, printing "<name> <version>". */
-    void argh_version(argh_parser *p, const char *version);
+    ARGH__DEF void argh_version(argh_parser *p, const char *version);
 
     /* ARGH_POSIX, ARGH_NO_AUTO_HELP, combined with |. Replaces the flags set
      * before, so pass them all in one call. */
-    void argh_set_flags(argh_parser *p, unsigned flags);
+    ARGH__DEF void argh_set_flags(argh_parser *p, unsigned flags);
 
     /* Redirects all output. The default writes to stdout and stderr, or
      * discards it with ARGH_NO_STDIO. */
-    void argh_set_writer(argh_parser *p, argh_write_fn write, void *ctx);
+    ARGH__DEF void argh_set_writer(argh_parser *p, argh_write_fn write, void *ctx);
 
     /* Adds an option table ending with ARGH_END. Tables and builder calls can
      * be mixed; options appear in help in the order they were added. */
-    void argh_table(argh_parser *p, const argh_opt *table);
+    ARGH__DEF void argh_table(argh_parser *p, const argh_opt *table);
 
 #ifndef ARGH_NO_COMMANDS
     /* Sets the top-level commands, a table ending with ARGH_CMD_END. Options
      * added with argh_table() and builder calls become global options that
      * work before and after the command name. */
-    void argh_commands(argh_parser *p, const argh_cmd *commands);
+    ARGH__DEF void argh_commands(argh_parser *p, const argh_cmd *commands);
 #endif
 
     /* ============================================================================
@@ -328,29 +356,29 @@ extern "C"
      * (argh_parse then fails with ARGH_E_CONFIG). Modifiers accept NULL.
      * ============================================================================ */
 
-    argh_opt *argh_flag(argh_parser *p, char short_name, const char *long_name, bool *target, const char *help);
-    argh_opt *argh_count(argh_parser *p, char short_name, const char *long_name, int *target, const char *help);
-    argh_opt *argh_int(argh_parser *p, char short_name, const char *long_name, int *target, const char *help);
-    argh_opt *argh_long(argh_parser *p, char short_name, const char *long_name, long *target, const char *help);
+    ARGH__DEF argh_opt *argh_flag(argh_parser *p, char short_name, const char *long_name, bool *target, const char *help);
+    ARGH__DEF argh_opt *argh_count(argh_parser *p, char short_name, const char *long_name, int *target, const char *help);
+    ARGH__DEF argh_opt *argh_int(argh_parser *p, char short_name, const char *long_name, int *target, const char *help);
+    ARGH__DEF argh_opt *argh_long(argh_parser *p, char short_name, const char *long_name, long *target, const char *help);
 #ifndef ARGH_NO_FLOAT
-    argh_opt *argh_double(argh_parser *p, char short_name, const char *long_name, double *target, const char *help);
+    ARGH__DEF argh_opt *argh_double(argh_parser *p, char short_name, const char *long_name, double *target, const char *help);
 #endif
-    argh_opt *argh_string(argh_parser *p, char short_name, const char *long_name, const char **target, const char *help);
-    argh_opt *argh_enum(argh_parser *p, char short_name, const char *long_name, int *target,
+    ARGH__DEF argh_opt *argh_string(argh_parser *p, char short_name, const char *long_name, const char **target, const char *help);
+    ARGH__DEF argh_opt *argh_enum(argh_parser *p, char short_name, const char *long_name, int *target,
                         const char *const *choices, const char *help);
-    argh_opt *argh_list(argh_parser *p, char short_name, const char *long_name, argh_values *target, const char *help);
-    argh_opt *argh_pos(argh_parser *p, const char *name, const char **target, const char *help);
-    argh_opt *argh_rest(argh_parser *p, const char *name, argh_values *target, const char *help);
-    argh_opt *argh_custom(argh_parser *p, char short_name, const char *long_name, void *target,
+    ARGH__DEF argh_opt *argh_list(argh_parser *p, char short_name, const char *long_name, argh_values *target, const char *help);
+    ARGH__DEF argh_opt *argh_pos(argh_parser *p, const char *name, const char **target, const char *help);
+    ARGH__DEF argh_opt *argh_rest(argh_parser *p, const char *name, argh_values *target, const char *help);
+    ARGH__DEF argh_opt *argh_custom(argh_parser *p, char short_name, const char *long_name, void *target,
                           const argh_type *type, const char *help);
-    argh_opt *argh_group(argh_parser *p, const char *title);
+    ARGH__DEF argh_opt *argh_group(argh_parser *p, const char *title);
 
-    argh_opt *argh_required(argh_opt *opt);
-    argh_opt *argh_optional(argh_opt *opt);
-    argh_opt *argh_hidden(argh_opt *opt);
-    argh_opt *argh_negatable(argh_opt *opt);
-    argh_opt *argh_once(argh_opt *opt);
-    argh_opt *argh_metavar(argh_opt *opt, const char *metavar);
+    ARGH__DEF argh_opt *argh_required(argh_opt *opt);
+    ARGH__DEF argh_opt *argh_optional(argh_opt *opt);
+    ARGH__DEF argh_opt *argh_hidden(argh_opt *opt);
+    ARGH__DEF argh_opt *argh_negatable(argh_opt *opt);
+    ARGH__DEF argh_opt *argh_once(argh_opt *opt);
+    ARGH__DEF argh_opt *argh_metavar(argh_opt *opt, const char *metavar);
 
     /* Sets constraints between options, a table ending with ARGH_RULES_END:
      *
@@ -362,14 +390,14 @@ extern "C"
      *
      * A rule applies when all its variables belong to options that are active
      * (the program's own options and those of the selected command). */
-    void argh_rules(argh_parser *p, const argh_rule *rules);
+    ARGH__DEF void argh_rules(argh_parser *p, const argh_rule *rules);
 
     /* Runs fn after all other checks passed, for anything rules can't say */
-    void argh_set_validator(argh_parser *p, argh_validate_fn fn, void *ctx);
+    ARGH__DEF void argh_set_validator(argh_parser *p, argh_validate_fn fn, void *ctx);
 
     /* For validators: records an error with this message and returns false.
      * The message must outlive the parser (a string literal is ideal). */
-    bool argh_fail(argh_parser *p, const char *message);
+    ARGH__DEF bool argh_fail(argh_parser *p, const char *message);
 
     /* ============================================================================
      * Parsing and results
@@ -378,31 +406,31 @@ extern "C"
     /* Returns true when the program should continue. Returns false after
      * printing help, the version, or an error; then return argh_exit_code().
      * argv is reordered in place: positionals end up first, in order. */
-    bool argh_parse(argh_parser *p, int argc, char **argv);
+    ARGH__DEF bool argh_parse(argh_parser *p, int argc, char **argv);
 
     /* 0 after --help/--version or success, 2 after a usage error. */
-    int argh_exit_code(const argh_parser *p);
+    ARGH__DEF int argh_exit_code(const argh_parser *p);
 
     /* True if the option bound to target appeared on the command line. */
-    bool argh_given(const argh_parser *p, const void *target);
+    ARGH__DEF bool argh_given(const argh_parser *p, const void *target);
 
 #ifndef ARGH_NO_COMMANDS
     /* The command that was selected (the deepest one), NULL without commands. */
-    const argh_cmd *argh_command(const argh_parser *p);
+    ARGH__DEF const argh_cmd *argh_command(const argh_parser *p);
 
     /* Calls the selected command's handler and returns its result, or 0 if the
      * command has no handler. */
-    int argh_run(argh_parser *p, void *user);
+    ARGH__DEF int argh_run(argh_parser *p, void *user);
 #endif
 
     /* The error from the last argh_parse(), code ARGH_E_NONE if none. */
-    const argh_error *argh_last_error(const argh_parser *p);
+    ARGH__DEF const argh_error *argh_last_error(const argh_parser *p);
 
     /* Formats the last error as one line without a trailing newline.
      * Returns the full length, like snprintf; output is truncated to fit. */
-    size_t argh_format_error(const argh_parser *p, char *buf, size_t size);
+    ARGH__DEF size_t argh_format_error(const argh_parser *p, char *buf, size_t size);
 
-    void argh_print_help(const argh_parser *p);
+    ARGH__DEF void argh_print_help(const argh_parser *p);
 
     /* ============================================================================
      * Table macros
@@ -1714,7 +1742,7 @@ extern "C"
      * Public API: setup and builder
      * ------------------------------------------------------------------------ */
 
-    void argh_init(argh_parser *p, const char *name, const char *about)
+    ARGH__DEF void argh_init(argh_parser *p, const char *name, const char *about)
     {
         memset(p, 0, sizeof(*p));
         p->argh__name = name;
@@ -1722,23 +1750,23 @@ extern "C"
         p->argh__write = argh__stdio_write;
     }
 
-    void argh_version(argh_parser *p, const char *version)
+    ARGH__DEF void argh_version(argh_parser *p, const char *version)
     {
         p->argh__version = version;
     }
 
-    void argh_set_flags(argh_parser *p, unsigned flags)
+    ARGH__DEF void argh_set_flags(argh_parser *p, unsigned flags)
     {
         p->argh__flags = (unsigned char)flags;
     }
 
-    void argh_set_writer(argh_parser *p, argh_write_fn write, void *ctx)
+    ARGH__DEF void argh_set_writer(argh_parser *p, argh_write_fn write, void *ctx)
     {
         p->argh__write = write ? write : argh__stdio_write;
         p->argh__write_ctx = ctx;
     }
 
-    void argh_table(argh_parser *p, const argh_opt *table)
+    ARGH__DEF void argh_table(argh_parser *p, const argh_opt *table)
     {
         if (p->argh__table_count >= ARGH_MAX_TABLES)
         {
@@ -1750,7 +1778,7 @@ extern "C"
     }
 
 #ifndef ARGH_NO_COMMANDS
-    void argh_commands(argh_parser *p, const argh_cmd *commands)
+    ARGH__DEF void argh_commands(argh_parser *p, const argh_cmd *commands)
     {
         p->argh__commands = commands;
     }
@@ -1786,66 +1814,66 @@ extern "C"
         return o;
     }
 
-    argh_opt *argh_flag(argh_parser *p, char s, const char *l, bool *target, const char *help)
+    ARGH__DEF argh_opt *argh_flag(argh_parser *p, char s, const char *l, bool *target, const char *help)
     {
         return argh__add(p, s, l, ARGH__K_FLAG, target, NULL, help);
     }
 
-    argh_opt *argh_count(argh_parser *p, char s, const char *l, int *target, const char *help)
+    ARGH__DEF argh_opt *argh_count(argh_parser *p, char s, const char *l, int *target, const char *help)
     {
         return argh__add(p, s, l, ARGH__K_COUNT, target, NULL, help);
     }
 
-    argh_opt *argh_int(argh_parser *p, char s, const char *l, int *target, const char *help)
+    ARGH__DEF argh_opt *argh_int(argh_parser *p, char s, const char *l, int *target, const char *help)
     {
         return argh__add(p, s, l, ARGH__K_INT, target, NULL, help);
     }
 
-    argh_opt *argh_long(argh_parser *p, char s, const char *l, long *target, const char *help)
+    ARGH__DEF argh_opt *argh_long(argh_parser *p, char s, const char *l, long *target, const char *help)
     {
         return argh__add(p, s, l, ARGH__K_LONG, target, NULL, help);
     }
 
 #ifndef ARGH_NO_FLOAT
-    argh_opt *argh_double(argh_parser *p, char s, const char *l, double *target, const char *help)
+    ARGH__DEF argh_opt *argh_double(argh_parser *p, char s, const char *l, double *target, const char *help)
     {
         return argh__add(p, s, l, ARGH__K_DOUBLE, target, NULL, help);
     }
 #endif
 
-    argh_opt *argh_string(argh_parser *p, char s, const char *l, const char **target, const char *help)
+    ARGH__DEF argh_opt *argh_string(argh_parser *p, char s, const char *l, const char **target, const char *help)
     {
         return argh__add(p, s, l, ARGH__K_STRING, (void *)target, NULL, help);
     }
 
-    argh_opt *argh_enum(argh_parser *p, char s, const char *l, int *target,
+    ARGH__DEF argh_opt *argh_enum(argh_parser *p, char s, const char *l, int *target,
                         const char *const *choices, const char *help)
     {
         return argh__add(p, s, l, ARGH__K_ENUM, target, choices, help);
     }
 
-    argh_opt *argh_list(argh_parser *p, char s, const char *l, argh_values *target, const char *help)
+    ARGH__DEF argh_opt *argh_list(argh_parser *p, char s, const char *l, argh_values *target, const char *help)
     {
         return argh__add(p, s, l, ARGH__K_LIST, target, NULL, help);
     }
 
-    argh_opt *argh_pos(argh_parser *p, const char *name, const char **target, const char *help)
+    ARGH__DEF argh_opt *argh_pos(argh_parser *p, const char *name, const char **target, const char *help)
     {
         return argh__add(p, 0, name, ARGH__K_POS, (void *)target, NULL, help);
     }
 
-    argh_opt *argh_rest(argh_parser *p, const char *name, argh_values *target, const char *help)
+    ARGH__DEF argh_opt *argh_rest(argh_parser *p, const char *name, argh_values *target, const char *help)
     {
         return argh__add(p, 0, name, ARGH__K_REST, target, NULL, help);
     }
 
-    argh_opt *argh_custom(argh_parser *p, char s, const char *l, void *target, const argh_type *type,
+    ARGH__DEF argh_opt *argh_custom(argh_parser *p, char s, const char *l, void *target, const argh_type *type,
                           const char *help)
     {
         return argh__add(p, s, l, ARGH__K_CUSTOM, target, type, help);
     }
 
-    argh_opt *argh_group(argh_parser *p, const char *title)
+    ARGH__DEF argh_opt *argh_group(argh_parser *p, const char *title)
     {
         return argh__add(p, 0, NULL, ARGH__K_GROUP, NULL, NULL, title);
     }
@@ -1857,13 +1885,13 @@ extern "C"
         return opt;
     }
 
-    argh_opt *argh_required(argh_opt *opt) { return argh__set_flag(opt, ARGH_REQUIRED); }
-    argh_opt *argh_optional(argh_opt *opt) { return argh__set_flag(opt, ARGH_OPTIONAL); }
-    argh_opt *argh_hidden(argh_opt *opt) { return argh__set_flag(opt, ARGH_HIDDEN); }
-    argh_opt *argh_negatable(argh_opt *opt) { return argh__set_flag(opt, ARGH_NEGATABLE); }
-    argh_opt *argh_once(argh_opt *opt) { return argh__set_flag(opt, ARGH_ONCE); }
+    ARGH__DEF argh_opt *argh_required(argh_opt *opt) { return argh__set_flag(opt, ARGH_REQUIRED); }
+    ARGH__DEF argh_opt *argh_optional(argh_opt *opt) { return argh__set_flag(opt, ARGH_OPTIONAL); }
+    ARGH__DEF argh_opt *argh_hidden(argh_opt *opt) { return argh__set_flag(opt, ARGH_HIDDEN); }
+    ARGH__DEF argh_opt *argh_negatable(argh_opt *opt) { return argh__set_flag(opt, ARGH_NEGATABLE); }
+    ARGH__DEF argh_opt *argh_once(argh_opt *opt) { return argh__set_flag(opt, ARGH_ONCE); }
 
-    argh_opt *argh_metavar(argh_opt *opt, const char *metavar)
+    ARGH__DEF argh_opt *argh_metavar(argh_opt *opt, const char *metavar)
     {
         if (opt)
             opt->metavar = metavar;
@@ -1874,7 +1902,7 @@ extern "C"
      * Public API: parsing and results
      * ------------------------------------------------------------------------ */
 
-    bool argh_parse(argh_parser *p, int argc, char **argv)
+    ARGH__DEF bool argh_parse(argh_parser *p, int argc, char **argv)
     {
         int positional_count = 0;
         int st;
@@ -1936,7 +1964,7 @@ extern "C"
         }
     }
 
-    int argh_exit_code(const argh_parser *p)
+    ARGH__DEF int argh_exit_code(const argh_parser *p)
     {
         return p->argh__status == ARGH__S_ERROR ? 2 : 0;
     }
@@ -1954,43 +1982,43 @@ extern "C"
         return NULL;
     }
 
-    bool argh_given(const argh_parser *p, const void *target)
+    ARGH__DEF bool argh_given(const argh_parser *p, const void *target)
     {
         int index;
         return argh__find_target(p, target, &index) && argh__seen(p, index);
     }
 
-    void argh_rules(argh_parser *p, const argh_rule *rules)
+    ARGH__DEF void argh_rules(argh_parser *p, const argh_rule *rules)
     {
         p->argh__rules = rules;
         p->argh__rule_check = argh__check_rules;
     }
 
-    void argh_set_validator(argh_parser *p, argh_validate_fn fn, void *ctx)
+    ARGH__DEF void argh_set_validator(argh_parser *p, argh_validate_fn fn, void *ctx)
     {
         p->argh__validator = fn;
         p->argh__validator_ctx = ctx;
     }
 
-    bool argh_fail(argh_parser *p, const char *message)
+    ARGH__DEF bool argh_fail(argh_parser *p, const char *message)
     {
         argh__fail(p, ARGH_E_CUSTOM, -1, NULL, NULL, 0);
         p->argh__error.detail = message;
         return false;
     }
 
-    const argh_error *argh_last_error(const argh_parser *p)
+    ARGH__DEF const argh_error *argh_last_error(const argh_parser *p)
     {
         return &p->argh__error;
     }
 
 #ifndef ARGH_NO_COMMANDS
-    const argh_cmd *argh_command(const argh_parser *p)
+    ARGH__DEF const argh_cmd *argh_command(const argh_parser *p)
     {
         return ARGH__LEAF(p);
     }
 
-    int argh_run(argh_parser *p, void *user)
+    ARGH__DEF int argh_run(argh_parser *p, void *user)
     {
         const argh_cmd *c = argh_command(p);
         return (c && c->run) ? c->run(p, user) : 0;
@@ -2057,7 +2085,7 @@ extern "C"
         }
     }
 
-    size_t argh_format_error(const argh_parser *p, char *buf, size_t size)
+    ARGH__DEF size_t argh_format_error(const argh_parser *p, char *buf, size_t size)
     {
         const argh_error *e = &p->argh__error;
         argh__sb b;
@@ -2413,7 +2441,7 @@ extern "C"
         argh__out(p, 0, "\n");
     }
 
-    void argh_print_help(const argh_parser *p)
+    ARGH__DEF void argh_print_help(const argh_parser *p)
     {
         char left[128];
         int column = 0;
