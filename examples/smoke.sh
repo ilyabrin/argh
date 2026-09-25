@@ -58,6 +58,8 @@ check 2 "one of '<files>' or '--stdin'"    $LOGSHIP --to x:1
 check 0 "+ left-pad ^1.3.0 (dev)"          $PKG install left-pad --version ^1.3 --dev
 check 0 "Would install packages"           $PKG -C ./app --offline install --dry-run
 check 0 "Added remote 'origin'"            $PKG remote add origin https://pkgs.example.com
+check 0 "Would run: node --version"        $PKG exec node --version
+check 0 "Would run: node --help"           $PKG -v exec node --help
 check 0 "Would run: node --version"        $PKG exec -- node --version
 check 0 "pkg 0.9.0"                        $PKG --version
 check 0 "Usage: pkg remote add"            $PKG help remote add

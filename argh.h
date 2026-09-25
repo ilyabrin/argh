@@ -230,6 +230,7 @@ extern "C"
         const argh_opt *opts;         /* options and positionals, NULL if none */
         const struct argh_cmd *subs;  /* subcommands, NULL for a leaf */
         int (*run)(struct argh_parser *p, void *user); /* handler, NULL if none */
+        unsigned flags;               /* ARGH_POSIX: options end at its first positional */
     } argh_cmd;
 
     /* Output sink for help, version and error messages. */
@@ -411,6 +412,7 @@ extern "C"
 #define ARGH__SECOND_(a, b, ...) b
 #define ARGH__THIRD(...) ARGH__EXPAND(ARGH__THIRD_(__VA_ARGS__, NULL, NULL, ~))
 #define ARGH__THIRD_(a, b, c, ...) c
+#define ARGH__THIRD_OR_0(...) ARGH__EXPAND(ARGH__THIRD_(__VA_ARGS__, 0, 0, ~))
 
 /* Constant-expression type check: both ?: branches must be compatible */
 #define ARGH__TARGET(type, ptr) ((void *)(1 ? (ptr) : (type *)0))
@@ -455,16 +457,18 @@ extern "C"
      *       ARGH_CMD_END
      *   };
      *
-     * ARGH_CMD(name, help, options[, handler]): the handler is optional.
+     * ARGH_CMD(name, help, options[, handler[, flags]]): the handler is optional.
+     * Flags: ARGH_POSIX ends options at the command's first positional, so
+     * `tool exec prog --its-flag` passes --its-flag on without `--`.
      * ARGH_CMD_GROUP(name, help, subcommands): a command that only holds
      * other commands.
      * ============================================================================ */
 
 #ifndef ARGH_NO_COMMANDS
 #define ARGH_CMD(name, help, ...) \
-    {(name), (help), ARGH__FIRST(__VA_ARGS__), NULL, ARGH__SECOND(__VA_ARGS__)}
-#define ARGH_CMD_GROUP(name, help, subs) {(name), (help), NULL, (subs), NULL}
-#define ARGH_CMD_END {NULL, NULL, NULL, NULL, NULL}
+    {(name), (help), ARGH__FIRST(__VA_ARGS__), NULL, ARGH__SECOND(__VA_ARGS__), ARGH__THIRD_OR_0(__VA_ARGS__)}
+#define ARGH_CMD_GROUP(name, help, subs) {(name), (help), NULL, (subs), NULL, 0}
+#define ARGH_CMD_END {NULL, NULL, NULL, NULL, NULL, 0}
 #endif
 
 #ifdef __cplusplus
@@ -1065,6 +1069,10 @@ extern "C"
                     argh__move_positional(argv, &w, i);
                 if (p->argh__flags & ARGH_POSIX)
                     only_positionals = true;
+#ifndef ARGH_NO_COMMANDS
+                else if (p->argh__depth && (p->argh__path[p->argh__depth - 1]->flags & ARGH_POSIX))
+                    only_positionals = true;
+#endif
                 continue;
             }
 
