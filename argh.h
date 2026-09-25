@@ -1,5 +1,5 @@
 /*
- * argh.h - v0.3.1 - Single-header command-line argument parser for C
+ * argh.h - v0.4.0 - Single-header command-line argument parser for C
  *
  * Status: early development. The API may change before v1.0.
  *
@@ -35,6 +35,8 @@
  *   ARGH_MAX_DEPTH    levels of nested commands (4)
  *   ARGH_NO_SUGGEST   no "did you mean" suggestions in error messages
  *   ARGH_NO_COMMANDS  no commands: smaller code for programs without them
+ *   ARGH_NO_STDIO     no <stdio.h>: output goes only to argh_set_writer()
+ *   ARGH_NO_FLOAT     no argh_double: no strtod and no floating point
  *
  * LICENSE: MIT (see end of file)
  */
@@ -228,6 +230,7 @@ extern "C"
         const argh_opt *opts;         /* options and positionals, NULL if none */
         const struct argh_cmd *subs;  /* subcommands, NULL for a leaf */
         int (*run)(struct argh_parser *p, void *user); /* handler, NULL if none */
+        unsigned flags;               /* ARGH_POSIX: options end at its first positional */
     } argh_cmd;
 
     /* Output sink for help, version and error messages. */
@@ -285,7 +288,8 @@ extern "C"
     /* ARGH_POSIX, ARGH_NO_AUTO_HELP */
     void argh_set_flags(argh_parser *p, unsigned flags);
 
-    /* Redirects all output. The default writes to stdout and stderr. */
+    /* Redirects all output. The default writes to stdout and stderr, or
+     * discards it with ARGH_NO_STDIO. */
     void argh_set_writer(argh_parser *p, argh_write_fn write, void *ctx);
 
     /* Adds an option table ending with ARGH_END. Tables and builder calls can
@@ -310,7 +314,9 @@ extern "C"
     argh_opt *argh_count(argh_parser *p, char short_name, const char *long_name, int *target, const char *help);
     argh_opt *argh_int(argh_parser *p, char short_name, const char *long_name, int *target, const char *help);
     argh_opt *argh_long(argh_parser *p, char short_name, const char *long_name, long *target, const char *help);
+#ifndef ARGH_NO_FLOAT
     argh_opt *argh_double(argh_parser *p, char short_name, const char *long_name, double *target, const char *help);
+#endif
     argh_opt *argh_string(argh_parser *p, char short_name, const char *long_name, const char **target, const char *help);
     argh_opt *argh_enum(argh_parser *p, char short_name, const char *long_name, int *target,
                         const char *const *choices, const char *help);
@@ -406,6 +412,7 @@ extern "C"
 #define ARGH__SECOND_(a, b, ...) b
 #define ARGH__THIRD(...) ARGH__EXPAND(ARGH__THIRD_(__VA_ARGS__, NULL, NULL, ~))
 #define ARGH__THIRD_(a, b, c, ...) c
+#define ARGH__THIRD_OR_0(...) ARGH__EXPAND(ARGH__THIRD_(__VA_ARGS__, 0, 0, ~))
 
 /* Constant-expression type check: both ?: branches must be compatible */
 #define ARGH__TARGET(type, ptr) ((void *)(1 ? (ptr) : (type *)0))
@@ -421,7 +428,9 @@ extern "C"
 #define ARGH_COUNT(s, l, target, ...) ARGH__OPT(s, l, ARGH_K_COUNT, int, target, NULL, __VA_ARGS__)
 #define ARGH_INT(s, l, target, ...) ARGH__OPT(s, l, ARGH_K_INT, int, target, NULL, __VA_ARGS__)
 #define ARGH_LONG(s, l, target, ...) ARGH__OPT(s, l, ARGH_K_LONG, long, target, NULL, __VA_ARGS__)
+#ifndef ARGH_NO_FLOAT
 #define ARGH_DOUBLE(s, l, target, ...) ARGH__OPT(s, l, ARGH_K_DOUBLE, double, target, NULL, __VA_ARGS__)
+#endif
 #define ARGH_STRING(s, l, target, ...) ARGH__OPT(s, l, ARGH_K_STRING, const char *, target, NULL, __VA_ARGS__)
 #define ARGH_ENUM(s, l, target, choices, ...) \
     ARGH__OPT(s, l, ARGH_K_ENUM, int, target, choices, __VA_ARGS__)
@@ -448,16 +457,18 @@ extern "C"
      *       ARGH_CMD_END
      *   };
      *
-     * ARGH_CMD(name, help, options[, handler]): the handler is optional.
+     * ARGH_CMD(name, help, options[, handler[, flags]]): the handler is optional.
+     * Flags: ARGH_POSIX ends options at the command's first positional, so
+     * `tool exec prog --its-flag` passes --its-flag on without `--`.
      * ARGH_CMD_GROUP(name, help, subcommands): a command that only holds
      * other commands.
      * ============================================================================ */
 
 #ifndef ARGH_NO_COMMANDS
 #define ARGH_CMD(name, help, ...) \
-    {(name), (help), ARGH__FIRST(__VA_ARGS__), NULL, ARGH__SECOND(__VA_ARGS__)}
-#define ARGH_CMD_GROUP(name, help, subs) {(name), (help), NULL, (subs), NULL}
-#define ARGH_CMD_END {NULL, NULL, NULL, NULL, NULL}
+    {(name), (help), ARGH__FIRST(__VA_ARGS__), NULL, ARGH__SECOND(__VA_ARGS__), ARGH__THIRD_OR_0(__VA_ARGS__)}
+#define ARGH_CMD_GROUP(name, help, subs) {(name), (help), NULL, (subs), NULL, 0}
+#define ARGH_CMD_END {NULL, NULL, NULL, NULL, NULL, 0}
 #endif
 
 #ifdef __cplusplus
@@ -477,8 +488,12 @@ extern "C"
 #include <ctype.h>
 #include <errno.h>
 #include <limits.h>
+#ifndef ARGH_NO_FLOAT
 #include <math.h>
+#endif
+#ifndef ARGH_NO_STDIO
 #include <stdio.h>
+#endif
 #include <stdlib.h>
 #include <string.h>
 
@@ -572,7 +587,13 @@ extern "C"
     static void argh__stdio_write(void *ctx, int to_stderr, const char *text, size_t len)
     {
         (void)ctx;
+#ifdef ARGH_NO_STDIO
+        (void)to_stderr;
+        (void)text;
+        (void)len;
+#else
         fwrite(text, 1, len, to_stderr ? stderr : stdout);
+#endif
     }
 
     static void argh__outn(const argh_parser *p, int err, const char *s, size_t n)
@@ -629,6 +650,67 @@ extern "C"
     {
         argh__sb_putn(b, &c, 1);
     }
+
+    /* Decimal text of v; buf needs 24 bytes. Avoids pulling in printf. */
+    static const char *argh__fmt_long(char *buf, long v)
+    {
+        char *s = buf + 23;
+        /* Negate as unsigned so LONG_MIN works */
+        unsigned long u = v < 0 ? 0UL - (unsigned long)v : (unsigned long)v;
+        *s = '\0';
+        do
+            *--s = (char)('0' + u % 10);
+        while (u /= 10);
+        if (v < 0)
+            *--s = '-';
+        return s;
+    }
+
+#if defined(ARGH_NO_STDIO) && !defined(ARGH_NO_FLOAT)
+    /* A short form of %g for help defaults: up to 6 decimals, trailing zeros
+     * dropped. Values it cannot show plainly give NULL (no default shown). */
+    static const char *argh__fmt_double(char *buf, double v)
+    {
+        char *s = buf;
+        double a = v < 0 ? -v : v;
+        unsigned long ip;
+        unsigned long frac;
+        int i;
+
+        if (!isfinite(v) || a >= 1e9 || (a != 0 && a < 1e-6))
+            return NULL;
+        ip = (unsigned long)a;
+        frac = (unsigned long)((a - (double)ip) * 1e6 + 0.5);
+        if (frac >= 1000000UL)
+        {
+            ip++;
+            frac = 0;
+        }
+        if (v < 0 && (ip || frac))
+            *s++ = '-';
+        {
+            char digits[24];
+            const char *d = argh__fmt_long(digits, (long)ip);
+            size_t n = strlen(d);
+            memcpy(s, d, n);
+            s += n;
+        }
+        if (frac)
+        {
+            *s++ = '.';
+            for (i = 5; i >= 0; i--)
+            {
+                s[i] = (char)('0' + frac % 10);
+                frac /= 10;
+            }
+            for (i = 6; s[i - 1] == '0'; i--)
+                ;
+            s += i;
+        }
+        *s = '\0';
+        return buf;
+    }
+#endif
 
     /* ------------------------------------------------------------------------
      * Option lookup
@@ -743,6 +825,7 @@ extern "C"
         return ARGH_E_NONE;
     }
 
+#ifndef ARGH_NO_FLOAT
     static argh_err argh__parse_double(const char *s, double *out)
     {
         char *end;
@@ -758,6 +841,7 @@ extern "C"
         *out = v;
         return ARGH_E_NONE;
     }
+#endif
 
     static bool argh__ieq(const char *a, const char *b)
     {
@@ -783,7 +867,9 @@ extern "C"
     static argh_err argh__store(const argh_opt *o, const char *v, bool negated, const char **reason)
     {
         long l;
+#ifndef ARGH_NO_FLOAT
         double d;
+#endif
         bool b;
         argh_err e;
 
@@ -813,11 +899,13 @@ extern "C"
                 return e;
             *(long *)o->target = l;
             return ARGH_E_NONE;
+#ifndef ARGH_NO_FLOAT
         case ARGH_K_DOUBLE:
             if ((e = argh__parse_double(v, &d)) != ARGH_E_NONE)
                 return e;
             *(double *)o->target = d;
             return ARGH_E_NONE;
+#endif
         case ARGH_K_STRING:
             *(const char **)o->target = v;
             return ARGH_E_NONE;
@@ -981,6 +1069,10 @@ extern "C"
                     argh__move_positional(argv, &w, i);
                 if (p->argh__flags & ARGH_POSIX)
                     only_positionals = true;
+#ifndef ARGH_NO_COMMANDS
+                else if (p->argh__depth && (p->argh__path[p->argh__depth - 1]->flags & ARGH_POSIX))
+                    only_positionals = true;
+#endif
                 continue;
             }
 
@@ -1696,10 +1788,12 @@ extern "C"
         return argh__add(p, s, l, ARGH_K_LONG, target, NULL, help);
     }
 
+#ifndef ARGH_NO_FLOAT
     argh_opt *argh_double(argh_parser *p, char s, const char *l, double *target, const char *help)
     {
         return argh__add(p, s, l, ARGH_K_DOUBLE, target, NULL, help);
     }
+#endif
 
     argh_opt *argh_string(argh_parser *p, char s, const char *l, const char **target, const char *help)
     {
@@ -2040,11 +2134,10 @@ extern "C"
         case ARGH_E_TOO_MANY_VALUES:
         {
             char num[24];
-            snprintf(num, sizeof(num), "%d", ((const argh_values *)e->opt->target)->capacity);
             argh__sb_put(&b, "too many values for '");
             argh__sb_opt_name(&b, e->opt, e->short_name);
             argh__sb_put(&b, "' (at most ");
-            argh__sb_put(&b, num);
+            argh__sb_put(&b, argh__fmt_long(num, ((const argh_values *)e->opt->target)->capacity));
             argh__sb_char(&b, ')');
             break;
         }
@@ -2232,17 +2325,21 @@ extern "C"
         switch (o->kind)
         {
         case ARGH_K_INT:
-            snprintf(num, sizeof(num), "%d", *(const int *)o->target);
-            text = num;
+            text = argh__fmt_long(num, *(const int *)o->target);
             break;
         case ARGH_K_LONG:
-            snprintf(num, sizeof(num), "%ld", *(const long *)o->target);
-            text = num;
+            text = argh__fmt_long(num, *(const long *)o->target);
             break;
+#ifndef ARGH_NO_FLOAT
         case ARGH_K_DOUBLE:
+#ifdef ARGH_NO_STDIO
+            text = argh__fmt_double(num, *(const double *)o->target);
+#else
             snprintf(num, sizeof(num), "%g", *(const double *)o->target);
             text = num;
+#endif
             break;
+#endif
         case ARGH_K_STRING:
             text = *(const char *const *)o->target;
             break;

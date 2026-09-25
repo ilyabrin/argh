@@ -4,7 +4,7 @@
  *   $ ./pkg install left-pad --version ^1.3 --dev
  *   $ ./pkg -C ./app --offline install --dry-run
  *   $ ./pkg remote add origin https://pkgs.example.com
- *   $ ./pkg exec -- node --version
+ *   $ ./pkg exec node --version
  *   $ ./pkg help remote add
  *
  * A dry run: commands print what they would do.
@@ -16,7 +16,7 @@
  *   - a custom type for version requirements with precise error messages
  *   - rules across global and command options, a validator that knows the
  *     selected command
- *   - "pkg exec -- cmd --its-own-flags" passing arguments through untouched
+ *   - "pkg exec cmd --its-own-flags" passing arguments through untouched
  *   - dispatch to handlers with an application context
  */
 
@@ -52,7 +52,7 @@ static const argh_cmd commands[] = {
     ARGH_CMD("install", "Add packages to the project", install_opts, cmd_install),
     ARGH_CMD("remove", "Remove packages from the project", remove_opts, cmd_remove),
     ARGH_CMD_GROUP("remote", "Manage package sources", remote_cmds),
-    ARGH_CMD("exec", "Run a program with the project's packages", exec_opts, cmd_exec),
+    ARGH_CMD("exec", "Run a program with the project's packages", exec_opts, cmd_exec, ARGH_POSIX),
     ARGH_CMD_END
 };
 

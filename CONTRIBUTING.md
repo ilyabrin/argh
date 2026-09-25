@@ -17,6 +17,7 @@ You need a C99 compiler and `make`. That's it.
 
 ```sh
 make test     # build and run the test suite
+make smoke    # run the examples and check their output
 make cxx      # check that argh.h compiles as C++
 make bench    # run benchmarks (speed and code size)
 make clean
@@ -29,6 +30,8 @@ CI runs the same commands on Linux (GCC, Clang, plus AddressSanitizer and Undefi
 ```sh
 make CC=clang test CFLAGS="-std=c99 -Wall -Wextra -Wpedantic -Werror -O1 -g -fsanitize=address,undefined"
 ```
+
+For parsing changes, also fuzz for a few minutes: `make fuzz FUZZ_TIME=300` (needs clang with libFuzzer, for example on Linux or WSL). If it finds a crash, it saves the input as `crash-*`; add that file to [tests/fuzz](tests/fuzz) so `make test` replays it from then on.
 
 ## What a good pull request looks like
 

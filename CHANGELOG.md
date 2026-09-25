@@ -6,6 +6,21 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-26
+
+### Added
+
+- POSIX mode for one command: `ARGH_CMD(name, help, options, handler, ARGH_POSIX)`. Options end at that command's first positional, so `tool exec node --version` passes `--version` on without `--`. `argh_cmd` has a new `flags` field; tables built with the `ARGH_CMD*` macros need no changes.
+- `ARGH_NO_STDIO` builds argh.h without `<stdio.h>` and the printf family, for firmware. Output goes only to the writer set with `argh_set_writer()`, and is discarded without one.
+- `ARGH_NO_FLOAT` removes `argh_double` and `ARGH_DOUBLE`, so `strtod` and floating point are not linked. On newlib this saves about 27 KB of flash.
+- Fuzzing: [tests/fuzz_argh.c](tests/fuzz_argh.c) runs for 2 minutes with ASan and UBSan on every pull request (`make fuzz`), and `make test` replays the saved inputs with any compiler.
+- Firmware size is measured in CI on Cortex-M0 and Cortex-M4 (`make size-arm`), with budgets: 12 KB for the full build and 10 KB for the reduced one.
+
+### Changed
+
+- Integers in help defaults and error messages are formatted without `snprintf`.
+- The `pkg exec` example uses the new per-command POSIX mode: `pkg exec node --version` needs no `--`.
+
 ## [0.3.1] - 2026-09-25
 
 ### Added
@@ -92,7 +107,8 @@ Compared with the code before the public release:
 
 - `argh_set_description` and `argh_set_help_width`, which had no effect.
 
-[Unreleased]: https://github.com/ilyabrin/argh/compare/v0.3.1...HEAD
+[Unreleased]: https://github.com/ilyabrin/argh/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/ilyabrin/argh/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/ilyabrin/argh/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/ilyabrin/argh/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/ilyabrin/argh/compare/v0.1.0...v0.2.0

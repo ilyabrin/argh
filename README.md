@@ -10,7 +10,7 @@ int jobs = 4;
 argh_int(&p, 'j', "jobs", &jobs, "Parallel jobs");
 ```
 
-> **Status: early development (v0.3).** Tested on every push, but the API may still change before v1.0.
+> **Status: early development (v0.4).** Tested on every push, but the API may still change before v1.0.
 > Feedback on the API is very welcome.
 
 ## Why argh
@@ -20,6 +20,8 @@ argh_int(&p, 'j', "jobs", &jobs, "Parallel jobs");
 - **Zero heap allocations, no global state.** Strings point into `argv`. Option tables can be `static const`, so they live in read-only memory (flash on microcontrollers).
 - **Help and errors included.** `--help`, `--version`, clear error messages and the right exit codes, without writing any of it.
 - **Strict by design.** Ambiguous input is an error, never a guess. No octal surprises, no prefix matching, no `-o=file`.
+- **Fits on a microcontroller.** Without stdio and floating point, argh adds about 11 KB of flash on a Cortex-M0, checked in CI. See [Microcontrollers](#microcontrollers).
+- **Fuzzed and sanitized.** Every pull request runs the tests with ASan and UBSan and fuzzes the parser.
 - **Close to `getopt_long` in speed**, while validating every value. See [Benchmarks](#benchmarks).
 
 ## Quick start
@@ -318,7 +320,8 @@ int main(int argc, char **argv)
 }
 ```
 
-- `ARGH_CMD(name, help, options[, handler])`: the handler is optional. Pass `NULL` for a command without options.
+- `ARGH_CMD(name, help, options[, handler[, flags]])`: the handler is optional. Pass `NULL` for a command without options.
+- `ARGH_POSIX` as the flags makes a pass-through command: options end at its first positional, so `tool exec node --version` hands `--version` to `node` without a `--`. Options for the command itself, and global ones, go before the program name. Write `ARGH_CMD("exec", "Run a program", exec_opts, NULL, ARGH_POSIX)` when there is no handler.
 - `ARGH_CMD_GROUP(name, help, subcommands)`: a command that only holds other commands, like `remote`.
 - Options added to the parser itself are **global**: they work before and after the command name (`tool -v build` and `tool build -v`). A command's own options only work after its name.
 - Dispatch either way: `argh_run(&p, app)` calls the handler and passes `app` through, or `argh_command(&p)` returns the selected command for your own `switch`.
@@ -409,6 +412,31 @@ static void my_writer(void *ctx, int to_stderr, const char *text, size_t len)
 argh_set_writer(&p, my_writer, NULL);
 ```
 
+### Microcontrollers
+
+Define two macros and give argh a writer:
+
+```c
+#define ARGH_NO_STDIO   /* no <stdio.h>, no printf family */
+#define ARGH_NO_FLOAT   /* no argh_double, so no strtod */
+#define ARGH_IMPLEMENTATION
+#include "argh.h"
+
+static void uart_write(void *ctx, int to_stderr, const char *text, size_t len)
+{
+    while (len--)
+        uart_putc(*text++);
+}
+
+argh_set_writer(&p, uart_write, NULL);
+```
+
+- **`ARGH_NO_STDIO`** keeps stdio out of your firmware. Output goes only to your writer; without one it is discarded. Help, errors and defaults in help work the same.
+- **`ARGH_NO_FLOAT`** matters more than it looks: the C library's `strtod` pulls in a large float parser, and on newlib also printf, about 27 KB on a Cortex-M0. Without it argh adds about 11 KB of flash, or about 9.3 KB with `ARGH_NO_COMMANDS` and `ARGH_NO_SUGGEST` (see [BENCHMARKS.md](BENCHMARKS.md#microcontrollers)). If you need fractions, a [custom type](#your-own-value-types) that parses fixed-point values costs far less.
+- **RAM:** the parser lives on the stack or wherever you put it: about 164 bytes on a 32-bit MCU plus 28 bytes per builder option. Set `ARGH_BUILDER_CAP` to what you use, or to 0 with `static const` tables, which stay in flash.
+
+With `ARGH_NO_STDIO` alone, doubles in help are shown with up to 6 decimals, and very large or very small ones are left out.
+
 ### Parsing rules
 
 | Input                 | Meaning                                                                     |
@@ -428,7 +456,7 @@ argh is strict where other parsers guess:
 - Numbers are checked completely: `10abc`, `" 5"` and out-of-range values are errors.
 - A negative number on its own (`-5`) is an unknown option. Pass it after `--`.
 
-`argh_parse` reorders `argv` in place so that positional arguments come first, in their original order. That's what lets `argh_rest` point into `argv` without copying. With `argh_set_flags(&p, ARGH_POSIX)`, parsing stops at the first positional argument, which suits wrapper tools like `sudo` or `time`.
+`argh_parse` reorders `argv` in place so that positional arguments come first, in their original order. That's what lets `argh_rest` point into `argv` without copying. With `argh_set_flags(&p, ARGH_POSIX)`, parsing stops at the first positional argument, which suits wrapper tools like `sudo` or `time`. For one command only, see [Commands](#commands).
 
 ### Configuration
 
@@ -442,6 +470,8 @@ Define before including `argh.h`:
 | `ARGH_MAX_DEPTH`   |       4 | Levels of nested commands                                      |
 | `ARGH_NO_SUGGEST`  |         | Define to remove "did you mean" suggestions (about 0.8 KB)     |
 | `ARGH_NO_COMMANDS` |         | Define to remove commands (about 2.6 KB) if you don't use them |
+| `ARGH_NO_STDIO`    |         | Define to build without `<stdio.h>`, for firmware (see below)  |
+| `ARGH_NO_FLOAT`    |         | Define to remove `argh_double` and all floating point          |
 
 Mistakes in the definitions, such as two options with the same name or a missing variable, are reported by `argh_parse` as `ARGH_E_CONFIG`. The checks for duplicate names and for the command tree run in builds without `NDEBUG`.
 
@@ -540,7 +570,7 @@ Three complete programs in [examples/](examples), each a real kind of tool:
 
 Planned for upcoming versions:
 
-- **A reduced build for microcontrollers** (no stdio, no help text) arrives in v0.4. Today argh adds 14 to 18 KB of code and text on Linux, depending on the features you keep (see [Configuration](#configuration)).
+- **Help and error text cannot be removed.** On a microcontroller argh adds about 9 to 11 KB of flash, strings included (see [Microcontrollers](#microcontrollers)).
 - Floating-point values follow the C locale's decimal separator, like `strtod`.
 
 ## Benchmarks
@@ -559,9 +589,14 @@ argh makes zero heap allocations. Details, memory, code size and the method: [BE
 ## Running the tests
 
 ```sh
-make test     # test suite
-make cxx      # check that argh.h compiles as C++
+make test       # test suite, a build without stdio, the saved fuzz inputs
+make smoke      # run the examples and check their output
+make cxx        # check that argh.h compiles as C++
+make fuzz       # fuzz the parser with libFuzzer (needs clang), 60 s by default
+make size-arm   # flash added to ARM firmware, checked against budgets
 ```
+
+CI runs all of these on Linux, macOS and Windows (GCC, Clang, MinGW, MSVC), plus AddressSanitizer and UndefinedBehaviorSanitizer and 2 minutes of fuzzing on every pull request. The fuzz target ([tests/fuzz_argh.c](tests/fuzz_argh.c)) feeds random command lines to a parser that uses every feature, and checks that `argv` is only reordered, that stored strings point into `argv`, and that error messages are consistent.
 
 ## Contributing
 

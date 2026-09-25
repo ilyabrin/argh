@@ -34,12 +34,22 @@ jobs:
           make CC=clang test
           CFLAGS="-std=c99 -Wall -Wextra -Wpedantic -Werror -O1 -g
           -fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=all"
-      - name: Reduced release build (ARGH_NO_COMMANDS, ARGH_NO_SUGGEST, NDEBUG)
+      - name: Fuzz argh_parse for 2 minutes
+        run: make fuzz FUZZ_TIME=120
+      - name: Reduced release build (ARGH_NO_COMMANDS, ARGH_NO_SUGGEST, ARGH_NO_STDIO, ARGH_NO_FLOAT, NDEBUG)
         run: >
           make clean && make CC=clang test
           CFLAGS="-std=c99 -Wall -Wextra -Wpedantic -Werror -O1 -g
-          -DARGH_NO_COMMANDS -DARGH_NO_SUGGEST -DNDEBUG
+          -DARGH_NO_COMMANDS -DARGH_NO_SUGGEST -DARGH_NO_STDIO -DARGH_NO_FLOAT -DNDEBUG
           -fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=all"
+
+  arm:
+    name: arm / cortex-m0, m4 / flash budget
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: sudo apt-get update && sudo apt-get install -y gcc-arm-none-eabi libnewlib-arm-none-eabi
+      - run: make size-arm
 
   mingw:
     name: windows / mingw gcc
@@ -62,6 +72,10 @@ jobs:
           call "%VSDIR%\VC\Auxiliary\Build\vcvars64.bat" || exit /b 1
           cl /nologo /W4 /std:c11 tests\test_argh.c /Fe:test_argh.exe || exit /b 1
           test_argh.exe || exit /b 1
+          cl /nologo /W4 /std:c11 tests\nostdio_check.c /Fe:nostdio_check.exe || exit /b 1
+          nostdio_check.exe || exit /b 1
+          cl /nologo /W4 /std:c11 /DFUZZ_REPLAY tests\fuzz_argh.c /Fe:fuzz_replay.exe || exit /b 1
+          for %%f in (tests\fuzz\*) do fuzz_replay.exe %%f || exit /b 1
           cl /nologo /W4 /WX /std:c++17 /EHsc tests\cxx_check.cpp /Fe:cxx_check.exe || exit /b 1
           cl /nologo /W4 /std:c11 examples\wc.c /Fe:examples\wc.exe || exit /b 1
           cl /nologo /W4 /std:c11 examples\logship.c /Fe:examples\logship.exe || exit /b 1
