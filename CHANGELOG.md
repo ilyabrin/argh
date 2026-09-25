@@ -6,6 +6,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-09-25
+
 ### Added
 
 - Three example programs in `examples/`: `wc`, `logship` and a multi-file `pkg` package manager, built and smoke-tested in CI. They replace `example.c`.
@@ -90,7 +92,8 @@ Compared with the code before the public release:
 
 - `argh_set_description` and `argh_set_help_width`, which had no effect.
 
-[Unreleased]: https://github.com/ilyabrin/argh/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/ilyabrin/argh/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/ilyabrin/argh/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/ilyabrin/argh/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/ilyabrin/argh/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/ilyabrin/argh/releases/tag/v0.1.0
