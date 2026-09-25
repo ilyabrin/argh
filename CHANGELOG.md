@@ -6,6 +6,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-26
+
 ### Added
 
 - POSIX mode for one command: `ARGH_CMD(name, help, options, handler, ARGH_POSIX)`. Options end at that command's first positional, so `tool exec node --version` passes `--version` on without `--`. `argh_cmd` has a new `flags` field; tables built with the `ARGH_CMD*` macros need no changes.
@@ -17,6 +19,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 ### Changed
 
 - Integers in help defaults and error messages are formatted without `snprintf`.
+- The `pkg exec` example uses the new per-command POSIX mode: `pkg exec node --version` needs no `--`.
 
 ## [0.3.1] - 2026-09-25
 
@@ -104,7 +107,8 @@ Compared with the code before the public release:
 
 - `argh_set_description` and `argh_set_help_width`, which had no effect.
 
-[Unreleased]: https://github.com/ilyabrin/argh/compare/v0.3.1...HEAD
+[Unreleased]: https://github.com/ilyabrin/argh/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/ilyabrin/argh/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/ilyabrin/argh/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/ilyabrin/argh/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/ilyabrin/argh/compare/v0.1.0...v0.2.0

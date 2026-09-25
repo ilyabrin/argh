@@ -10,7 +10,7 @@ int jobs = 4;
 argh_int(&p, 'j', "jobs", &jobs, "Parallel jobs");
 ```
 
-> **Status: early development (v0.3).** Tested on every push, but the API may still change before v1.0.
+> **Status: early development (v0.4).** Tested on every push, but the API may still change before v1.0.
 > Feedback on the API is very welcome.
 
 ## Why argh
@@ -20,6 +20,8 @@ argh_int(&p, 'j', "jobs", &jobs, "Parallel jobs");
 - **Zero heap allocations, no global state.** Strings point into `argv`. Option tables can be `static const`, so they live in read-only memory (flash on microcontrollers).
 - **Help and errors included.** `--help`, `--version`, clear error messages and the right exit codes, without writing any of it.
 - **Strict by design.** Ambiguous input is an error, never a guess. No octal surprises, no prefix matching, no `-o=file`.
+- **Fits on a microcontroller.** Without stdio and floating point, argh adds about 11 KB of flash on a Cortex-M0, checked in CI. See [Microcontrollers](#microcontrollers).
+- **Fuzzed and sanitized.** Every pull request runs the tests with ASan and UBSan and fuzzes the parser.
 - **Close to `getopt_long` in speed**, while validating every value. See [Benchmarks](#benchmarks).
 
 ## Quick start
