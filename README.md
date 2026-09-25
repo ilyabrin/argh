@@ -409,6 +409,8 @@ static void my_writer(void *ctx, int to_stderr, const char *text, size_t len)
 argh_set_writer(&p, my_writer, NULL);
 ```
 
+On a microcontroller, define `ARGH_NO_STDIO`: argh.h then never includes `<stdio.h>` or calls the printf family, so none of it ends up in your firmware. Output goes only to your writer; without one it is discarded. Everything else works the same, including defaults in help. Doubles in help are shown with up to 6 decimals, and very large or very small ones are left out.
+
 ### Parsing rules
 
 | Input                 | Meaning                                                                     |
@@ -442,6 +444,7 @@ Define before including `argh.h`:
 | `ARGH_MAX_DEPTH`   |       4 | Levels of nested commands                                      |
 | `ARGH_NO_SUGGEST`  |         | Define to remove "did you mean" suggestions (about 0.8 KB)     |
 | `ARGH_NO_COMMANDS` |         | Define to remove commands (about 2.6 KB) if you don't use them |
+| `ARGH_NO_STDIO`    |         | Define to build without `<stdio.h>`, for firmware (see below)  |
 
 Mistakes in the definitions, such as two options with the same name or a missing variable, are reported by `argh_parse` as `ARGH_E_CONFIG`. The checks for duplicate names and for the command tree run in builds without `NDEBUG`.
 
