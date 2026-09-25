@@ -6,6 +6,18 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-09-25
+
+### Added
+
+- Three example programs in `examples/`: `wc`, `logship` and a multi-file `pkg` package manager, built and smoke-tested in CI. They replace `example.c`.
+- Table macros take an optional value name for help after the flags: `ARGH_STRING(0, "tls-key", &key, "Client key", 0, "<file>")`.
+
+### Fixed
+
+- A command's own `--version` or `-V` option was taken over by the built-in version flag. The command's option now wins, like `cargo install --version`, and help lists only the built-in forms that still apply.
+- Debug builds now also report `-h`/`--help` defined in a command's options, not only at the top level.
+
 ## [0.3.0] - 2026-09-24
 
 Commands, suggestions, custom types and rules. No breaking changes to the v0.2 API.
@@ -80,7 +92,8 @@ Compared with the code before the public release:
 
 - `argh_set_description` and `argh_set_help_width`, which had no effect.
 
-[Unreleased]: https://github.com/ilyabrin/argh/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/ilyabrin/argh/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/ilyabrin/argh/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/ilyabrin/argh/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/ilyabrin/argh/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/ilyabrin/argh/releases/tag/v0.1.0

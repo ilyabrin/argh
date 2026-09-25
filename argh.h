@@ -1,5 +1,5 @@
 /*
- * argh.h - v0.3.0 - Single-header command-line argument parser for C
+ * argh.h - v0.3.1 - Single-header command-line argument parser for C
  *
  * Status: early development. The API may change before v1.0.
  *
@@ -389,8 +389,12 @@ extern "C"
      *       ARGH_END
      *   };
      *
-     * The last argument (flags) is optional. The compiler warns if the
-     * variable has the wrong type for the option.
+     * After the help text come two optional arguments: flags, and the name of
+     * the value in help (metavar), which needs flags before it (0 for none):
+     *
+     *       ARGH_STRING(0, "tls-key", &key, "Client key", 0, "<file>"),
+     *
+     * The compiler warns if the variable has the wrong type for the option.
      * ============================================================================ */
 
 /* The traditional MSVC preprocessor passes __VA_ARGS__ on as one token.
@@ -400,6 +404,8 @@ extern "C"
 #define ARGH__FIRST_(a, ...) a
 #define ARGH__SECOND(...) ARGH__EXPAND(ARGH__SECOND_(__VA_ARGS__, 0, ~))
 #define ARGH__SECOND_(a, b, ...) b
+#define ARGH__THIRD(...) ARGH__EXPAND(ARGH__THIRD_(__VA_ARGS__, NULL, NULL, ~))
+#define ARGH__THIRD_(a, b, c, ...) c
 
 /* Constant-expression type check: both ?: branches must be compatible */
 #define ARGH__TARGET(type, ptr) ((void *)(1 ? (ptr) : (type *)0))
@@ -407,7 +413,8 @@ extern "C"
 #define ARGH__OPT(s, l, kind, type, target, extra, ...)                                    \
     {                                                                                      \
         (char)(s), (l), (unsigned char)(kind), (unsigned char)(ARGH__SECOND(__VA_ARGS__)), \
-            ARGH__TARGET(type, target), (const void *)(extra), ARGH__FIRST(__VA_ARGS__), NULL \
+            ARGH__TARGET(type, target), (const void *)(extra), ARGH__FIRST(__VA_ARGS__),   \
+            ARGH__THIRD(__VA_ARGS__)                                                       \
     }
 
 #define ARGH_FLAG(s, l, target, ...) ARGH__OPT(s, l, ARGH_K_FLAG, bool, target, NULL, __VA_ARGS__)
@@ -425,7 +432,8 @@ extern "C"
 #define ARGH_CUSTOM(s, l, target, type, ...)                                                        \
     {                                                                                               \
         (char)(s), (l), (unsigned char)ARGH_K_CUSTOM, (unsigned char)(ARGH__SECOND(__VA_ARGS__)),   \
-            (void *)(target), (const void *)(type), ARGH__FIRST(__VA_ARGS__), NULL                  \
+            (void *)(target), (const void *)(type), ARGH__FIRST(__VA_ARGS__),                       \
+            ARGH__THIRD(__VA_ARGS__)                                                                \
     }
 #define ARGH_GROUP(title) {0, NULL, (unsigned char)ARGH_K_GROUP, 0, NULL, NULL, (title), NULL}
 #define ARGH_END {0, NULL, (unsigned char)ARGH_K_END, 0, NULL, NULL, NULL, NULL}
@@ -993,15 +1001,16 @@ extern "C"
                 bool negated = false;
                 int index = 0;
 
+                o = argh__find_long(p, name, len, &index);
                 if (argh__auto_help(p))
                 {
                     if (len == 4 && strncmp(name, "help", 4) == 0)
                         return ARGH__S_HELP;
-                    if (p->argh__version && len == 7 && strncmp(name, "version", 7) == 0)
+                    /* A command may have its own --version, like
+                     * `cargo install --version 1.0`; it wins */
+                    if (!o && p->argh__version && len == 7 && strncmp(name, "version", 7) == 0)
                         return ARGH__S_VERSION;
                 }
-
-                o = argh__find_long(p, name, len, &index);
                 if (!o && len > 3 && strncmp(name, "no-", 3) == 0)
                 {
                     o = argh__find_long(p, name + 3, len - 3, &index);
@@ -1044,15 +1053,15 @@ extern "C"
                         rc = argh__fail(p, ARGH_E_SHORT_EQUALS, argi, NULL, arg, c[-1]);
                         break;
                     }
+                    o = argh__find_short(p, *c, &index);
                     if (argh__auto_help(p))
                     {
                         if (*c == 'h')
                             return ARGH__S_HELP;
-                        if (*c == 'V' && p->argh__version)
+                        if (!o && *c == 'V' && p->argh__version)
                             return ARGH__S_VERSION;
                     }
 
-                    o = argh__find_short(p, *c, &index);
                     if (!o)
                     {
                         rc = argh__fail(p, ARGH_E_UNKNOWN_OPTION, argi, NULL, arg, *c);
@@ -1278,6 +1287,16 @@ extern "C"
                     return argh__config_error(p, "command defined twice", NULL);
             if (a->subs && argh__has_positionals(a->opts))
                 return argh__config_error(p, "a command with subcommands cannot have positional arguments", NULL);
+            if (argh__auto_help(p))
+            {
+                /* -h/--help stay reserved everywhere; -V/--version may be
+                 * redefined by a command */
+                const argh_opt *o;
+                for (o = a->opts; o && o->kind != ARGH_K_END; o++)
+                    if (argh__is_option_kind(o->kind) &&
+                        (o->short_name == 'h' || (o->long_name && strcmp(o->long_name, "help") == 0)))
+                        return argh__config_error(p, "name reserved for help, see ARGH_NO_AUTO_HELP", o);
+            }
             if (a->subs && (st = argh__check_commands(p, a->subs, depth + 1)) != ARGH__S_OK)
                 return st;
         }
@@ -2411,7 +2430,19 @@ extern "C"
             argh__out(p, 0, in_section ? "\n" : "\nOptions:\n");
             argh__help_line(p, "-h, --help", 10, "Print help", column, NULL);
             if (p->argh__version)
-                argh__help_line(p, "-V, --version", 13, "Print version", column, NULL);
+            {
+                /* A command may take over --version or -V (see argh__scan);
+                 * list only the forms that still print the version */
+                int index;
+                bool long_free = !argh__find_long(p, "version", 7, &index);
+                bool short_free = !argh__find_short(p, 'V', &index);
+                if (long_free && short_free)
+                    argh__help_line(p, "-V, --version", 13, "Print version", column, NULL);
+                else if (long_free)
+                    argh__help_line(p, "    --version", 13, "Print version", column, NULL);
+                else if (short_free)
+                    argh__help_line(p, "-V", 2, "Print version", column, NULL);
+            }
         }
     }
 
