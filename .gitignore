@@ -53,6 +53,13 @@ desktop.ini
 /test_argh
 /bench_parse
 /cxx_check
+/nostdio_check
+/fuzz_replay
+/fuzz_argh
+/fuzz_corpus/
+crash-*
+leak-*
+timeout-*
 /examples/wc
 /examples/logship
 /examples/pkg/pkg
