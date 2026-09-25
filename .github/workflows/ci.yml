@@ -62,8 +62,7 @@ jobs:
           call "%VSDIR%\VC\Auxiliary\Build\vcvars64.bat" || exit /b 1
           cl /nologo /W4 /std:c11 tests\test_argh.c /Fe:test_argh.exe || exit /b 1
           test_argh.exe || exit /b 1
-          cl /nologo /W4 /std:c11 tests
-ostdio_check.c /Fe:nostdio_check.exe || exit /b 1
+          cl /nologo /W4 /std:c11 tests\nostdio_check.c /Fe:nostdio_check.exe || exit /b 1
           nostdio_check.exe || exit /b 1
           cl /nologo /W4 /WX /std:c++17 /EHsc tests\cxx_check.cpp /Fe:cxx_check.exe || exit /b 1
           cl /nologo /W4 /std:c11 examples\wc.c /Fe:examples\wc.exe || exit /b 1
