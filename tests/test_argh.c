@@ -1996,6 +1996,74 @@ TEST(test_command_posix_mode_at_leaf)
     ASSERT_STR_EQ(c_args.items[1], "-v");
 }
 
+/* ARGH_POSIX on one command: `tool exec prog --flags` without `--` */
+static bool px_env;
+static argh_values px_rest;
+static const argh_opt px_exec_opts[] = {
+    ARGH_FLAG('e', "env", &px_env, "Load .env"),
+    ARGH_REST("command", &px_rest, "Program and its arguments"),
+    ARGH_END,
+};
+static const argh_opt px_build_opts[] = {
+    ARGH_REST("targets", &px_rest, "Targets"),
+    ARGH_END,
+};
+static const argh_cmd px_cmds[] = {
+    ARGH_CMD("exec", "Run a program", px_exec_opts, NULL, ARGH_POSIX),
+    ARGH_CMD("build", "Build", px_build_opts),
+    ARGH_CMD_END,
+};
+
+static void setup_posix_commands(argh_parser *p)
+{
+    px_env = c_verbose = false;
+    memset(&px_rest, 0, sizeof(px_rest));
+    argh_init(p, "tool", NULL);
+    argh_set_writer(p, capture, NULL);
+    argh_flag(p, 'v', "verbose", &c_verbose, "Verbose output");
+    argh_commands(p, px_cmds);
+}
+
+TEST(test_command_posix_flag)
+{
+    ARGV("-v", "exec", "-e", "ls", "-v", "--color", "--help");
+    argh_parser p;
+    setup_posix_commands(&p);
+
+    ASSERT_TRUE(argh_parse(&p, argc, argv));
+    ASSERT_TRUE(c_verbose);
+    ASSERT_TRUE(px_env);
+    ASSERT_EQ(px_rest.count, 4);
+    ASSERT_STR_EQ(px_rest.items[0], "ls");
+    ASSERT_STR_EQ(px_rest.items[1], "-v");
+    ASSERT_STR_EQ(px_rest.items[2], "--color");
+    ASSERT_STR_EQ(px_rest.items[3], "--help");
+    ASSERT_STR_EQ(out_text, "");
+}
+
+TEST(test_command_posix_flag_is_per_command)
+{
+    ARGV("build", "app", "-v");
+    argh_parser p;
+    setup_posix_commands(&p);
+
+    ASSERT_TRUE(argh_parse(&p, argc, argv));
+    ASSERT_TRUE(c_verbose);
+    ASSERT_EQ(px_rest.count, 1);
+}
+
+TEST(test_command_posix_flag_accepts_double_dash)
+{
+    ARGV("exec", "--", "ls", "-l");
+    argh_parser p;
+    setup_posix_commands(&p);
+
+    ASSERT_TRUE(argh_parse(&p, argc, argv));
+    ASSERT_EQ(px_rest.count, 2);
+    ASSERT_STR_EQ(px_rest.items[0], "ls");
+    ASSERT_STR_EQ(px_rest.items[1], "-l");
+}
+
 #endif /* ARGH_NO_COMMANDS */
 
 #ifndef ARGH_NO_SUGGEST
@@ -2266,6 +2334,9 @@ int main(void)
 #endif
 #if !defined(ARGH_NO_COMMANDS)
     RUN_TEST(test_command_posix_mode_at_leaf);
+    RUN_TEST(test_command_posix_flag);
+    RUN_TEST(test_command_posix_flag_is_per_command);
+    RUN_TEST(test_command_posix_flag_accepts_double_dash);
     RUN_TEST(test_command_own_version_option);
 #ifndef NDEBUG
     RUN_TEST(test_command_config_reserved_help_option);

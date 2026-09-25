@@ -318,7 +318,8 @@ int main(int argc, char **argv)
 }
 ```
 
-- `ARGH_CMD(name, help, options[, handler])`: the handler is optional. Pass `NULL` for a command without options.
+- `ARGH_CMD(name, help, options[, handler[, flags]])`: the handler is optional. Pass `NULL` for a command without options.
+- `ARGH_POSIX` as the flags makes a pass-through command: options end at its first positional, so `tool exec node --version` hands `--version` to `node` without a `--`. Options for the command itself, and global ones, go before the program name. Write `ARGH_CMD("exec", "Run a program", exec_opts, NULL, ARGH_POSIX)` when there is no handler.
 - `ARGH_CMD_GROUP(name, help, subcommands)`: a command that only holds other commands, like `remote`.
 - Options added to the parser itself are **global**: they work before and after the command name (`tool -v build` and `tool build -v`). A command's own options only work after its name.
 - Dispatch either way: `argh_run(&p, app)` calls the handler and passes `app` through, or `argh_command(&p)` returns the selected command for your own `switch`.
@@ -453,7 +454,7 @@ argh is strict where other parsers guess:
 - Numbers are checked completely: `10abc`, `" 5"` and out-of-range values are errors.
 - A negative number on its own (`-5`) is an unknown option. Pass it after `--`.
 
-`argh_parse` reorders `argv` in place so that positional arguments come first, in their original order. That's what lets `argh_rest` point into `argv` without copying. With `argh_set_flags(&p, ARGH_POSIX)`, parsing stops at the first positional argument, which suits wrapper tools like `sudo` or `time`.
+`argh_parse` reorders `argv` in place so that positional arguments come first, in their original order. That's what lets `argh_rest` point into `argv` without copying. With `argh_set_flags(&p, ARGH_POSIX)`, parsing stops at the first positional argument, which suits wrapper tools like `sudo` or `time`. For one command only, see [Commands](#commands).
 
 ### Configuration
 

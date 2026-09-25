@@ -11,7 +11,7 @@ make smoke      # run them and check their output (CI does this on every push)
 | -------------------------- | ------------------------------------------- | ----------------------------------------------------------------------------------------------- |
 | [wc.c](wc.c)               | Counts lines, words and bytes, like `wc`    | Flags, a file list, `--help` and `--version` for free                                           |
 | [logship.c](logship.c)     | Sends log files to a collector              | An option table, help groups, custom types, enums, lists, rules, a validator, `argh_given`      |
-| [pkg/](pkg)                | A package manager front end, like `cargo`   | Commands over several files, global options, handlers with a context, a version type, `--`      |
+| [pkg/](pkg)                | A package manager front end, like `cargo`   | Commands over several files, global options, handlers with a context, a version type, pass-through|
 
 `logship` and `pkg` are dry runs: they do all the checking a real tool would do, then print what they would do instead of touching the network.
 
@@ -102,7 +102,7 @@ pkg/
   main.c      global options, the command tree, rules, validator, dispatch
   install.c   install and remove, and a custom type for version requirements
   remote.c    the remote add / remove / list group
-  exec.c      exec -- <program> [args...]
+  exec.c      exec <program> [args...], options passed on untouched
 ```
 
 ```console
@@ -113,14 +113,14 @@ $ ./pkg -v -C ./app --offline install --dry-run
 [pkg] in ./app, source: local cache
 Would install packages from the lockfile, source: local cache
 
-$ ./pkg exec -- node --version
+$ ./pkg exec node --version
 Would run: node --version
 
 $ ./pkg --version
 pkg 0.9.0
 ```
 
-`install` has its own `--version` option for the package version, like `cargo install --version`, while `pkg --version` still prints the program's version.
+`install` has its own `--version` option for the package version, like `cargo install --version`, while `pkg --version` still prints the program's version. And `exec` is registered with `ARGH_POSIX`, so everything after the program name, `--version` included, goes to that program without a `--`.
 
 Help follows the command you ask about, with the global options listed separately:
 

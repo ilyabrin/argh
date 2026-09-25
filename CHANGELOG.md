@@ -8,6 +8,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ### Added
 
+- POSIX mode for one command: `ARGH_CMD(name, help, options, handler, ARGH_POSIX)`. Options end at that command's first positional, so `tool exec node --version` passes `--version` on without `--`. `argh_cmd` has a new `flags` field; tables built with the `ARGH_CMD*` macros need no changes.
 - `ARGH_NO_STDIO` builds argh.h without `<stdio.h>` and the printf family, for firmware. Output goes only to the writer set with `argh_set_writer()`, and is discarded without one.
 - `ARGH_NO_FLOAT` removes `argh_double` and `ARGH_DOUBLE`, so `strtod` and floating point are not linked. On newlib this saves about 27 KB of flash.
 - Firmware size is measured in CI on Cortex-M0 and Cortex-M4 (`make size-arm`), with budgets: 12 KB for the full build and 10 KB for the reduced one.

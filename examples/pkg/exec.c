@@ -1,14 +1,15 @@
 /*
- * pkg exec -- <program> [args...]: run a program with the project's packages.
+ * pkg exec <program> [args...]: run a program with the project's packages.
  *
- * Everything after "--" is passed on untouched, including options like
- * --version that pkg itself would otherwise take.
+ * The command is registered with ARGH_POSIX (see main.c): options end at the
+ * program name, so its own options, even --version or --help, are passed on
+ * untouched. Options for exec itself go before the program name.
  */
 
 #include "pkg.h"
 
 const argh_opt exec_opts[] = {
-    ARGH_REST("command", &opt.exec.command, "Program and its arguments, after --", ARGH_REQUIRED),
+    ARGH_REST("command", &opt.exec.command, "Program and its arguments", ARGH_REQUIRED),
     ARGH_END
 };
 
