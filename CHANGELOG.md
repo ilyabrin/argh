@@ -6,6 +6,17 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+### Changed (breaking)
+
+- `argh_write_fn` takes `bool to_stderr` instead of `int`. Change the parameter type in your writer.
+- `ARGH_K_*`, `ARGH_R_*`, `enum argh_kind` and `enum argh_rule_kind` are internal now (`ARGH__K_*`, `ARGH__R_*`). Code that uses the macros and functions is not affected.
+- `argh_init` is a macro for a function whose name encodes the size settings (`ARGH_BUILDER_CAP`, `ARGH_MAX_OPTS`, `ARGH_MAX_TABLES`, `ARGH_MAX_DEPTH`, `ARGH_NO_COMMANDS`). Files that include argh.h with different settings now fail to link instead of corrupting memory at run time. Calls stay the same; the settings must be plain numbers.
+
+### Documented
+
+- Error code values are stable: new codes are only added at the end.
+- `argh_set_flags` replaces the flags set before.
+
 ## [0.4.0] - 2026-09-26
 
 ### Added
