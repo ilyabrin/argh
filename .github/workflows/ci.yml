@@ -21,6 +21,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - run: make CC=${{ matrix.cc }} all test
+      - run: make CC=${{ matrix.cc }} smoke
       - run: make CXX=${{ matrix.cc == 'gcc' && 'g++' || 'clang++' }} cxx
       - run: make CC=${{ matrix.cc }} bench
 
@@ -46,6 +47,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - run: make all test
+      - run: make smoke
       - run: make bench
 
   msvc:
@@ -61,3 +63,9 @@ jobs:
           cl /nologo /W4 /std:c11 tests\test_argh.c /Fe:test_argh.exe || exit /b 1
           test_argh.exe || exit /b 1
           cl /nologo /W4 /WX /std:c++17 /EHsc tests\cxx_check.cpp /Fe:cxx_check.exe || exit /b 1
+          cl /nologo /W4 /std:c11 examples\wc.c /Fe:examples\wc.exe || exit /b 1
+          cl /nologo /W4 /std:c11 examples\logship.c /Fe:examples\logship.exe || exit /b 1
+          cl /nologo /W4 /std:c11 examples\pkg\main.c examples\pkg\install.c examples\pkg\remote.c examples\pkg\exec.c /Fe:examples\pkg\pkg.exe || exit /b 1
+      - name: Smoke-test the examples
+        shell: bash
+        run: sh examples/smoke.sh
