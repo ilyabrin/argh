@@ -332,6 +332,7 @@ TEST(test_long)
 #endif
 }
 
+#ifndef ARGH_NO_FLOAT
 TEST(test_double)
 {
     ARGV("--a=1.5", "--b", "1e-3", "--c=-.25");
@@ -369,6 +370,7 @@ TEST(test_double_rejects_bad_input)
     ASSERT_EQ(parse_double_value("."), ARGH_E_INVALID_VALUE);
     ASSERT_EQ(parse_double_value("1e999"), ARGH_E_OUT_OF_RANGE);
 }
+#endif
 
 /* ============================================================================
  * Strings, enums, lists
@@ -904,22 +906,26 @@ TEST(test_help_number_defaults)
     ARGV("--help");
     int i = -42;
     long l = LONG_MIN;
-    double d1 = 0.5, d2 = 2.0, d3 = -1.25;
     argh_parser p;
     setup(&p);
     argh_int(&p, 0, "int", &i, "I");
     argh_long(&p, 0, "long", &l, "L");
+#ifndef ARGH_NO_FLOAT
+    double d1 = 0.5, d2 = 2.0, d3 = -1.25;
     argh_double(&p, 0, "half", &d1, "D1");
     argh_double(&p, 0, "two", &d2, "D2");
     argh_double(&p, 0, "neg", &d3, "D3");
+#endif
 
     ASSERT_FALSE(argh_parse(&p, argc, argv));
     ASSERT_TRUE(strstr(out_text, "I (default: -42)\n") != NULL);
     ASSERT_TRUE(strstr(out_text, LONG_MIN == -2147483647L - 1 ? "L (default: -2147483648)\n"
                                                                  : "L (default: -9223372036854775808)\n") != NULL);
+#ifndef ARGH_NO_FLOAT
     ASSERT_TRUE(strstr(out_text, "D1 (default: 0.5)\n") != NULL);
     ASSERT_TRUE(strstr(out_text, "D2 (default: 2)\n") != NULL);
     ASSERT_TRUE(strstr(out_text, "D3 (default: -1.25)\n") != NULL);
+#endif
 }
 
 TEST(test_help_output)
@@ -2112,8 +2118,10 @@ int main(void)
     RUN_TEST(test_int_rejects_bad_input);
     RUN_TEST(test_int_error_message);
     RUN_TEST(test_long);
+#ifndef ARGH_NO_FLOAT
     RUN_TEST(test_double);
     RUN_TEST(test_double_rejects_bad_input);
+#endif
 
     RUN_TEST(test_string_forms);
     RUN_TEST(test_value_cluster);

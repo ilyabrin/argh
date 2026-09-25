@@ -409,7 +409,30 @@ static void my_writer(void *ctx, int to_stderr, const char *text, size_t len)
 argh_set_writer(&p, my_writer, NULL);
 ```
 
-On a microcontroller, define `ARGH_NO_STDIO`: argh.h then never includes `<stdio.h>` or calls the printf family, so none of it ends up in your firmware. Output goes only to your writer; without one it is discarded. Everything else works the same, including defaults in help. Doubles in help are shown with up to 6 decimals, and very large or very small ones are left out.
+### Microcontrollers
+
+Define two macros and give argh a writer:
+
+```c
+#define ARGH_NO_STDIO   /* no <stdio.h>, no printf family */
+#define ARGH_NO_FLOAT   /* no argh_double, so no strtod */
+#define ARGH_IMPLEMENTATION
+#include "argh.h"
+
+static void uart_write(void *ctx, int to_stderr, const char *text, size_t len)
+{
+    while (len--)
+        uart_putc(*text++);
+}
+
+argh_set_writer(&p, uart_write, NULL);
+```
+
+- **`ARGH_NO_STDIO`** keeps stdio out of your firmware. Output goes only to your writer; without one it is discarded. Help, errors and defaults in help work the same.
+- **`ARGH_NO_FLOAT`** matters more than it looks: the C library's `strtod` pulls in a large float parser, and on newlib also printf, about 27 KB on a Cortex-M0. Without it argh adds about 11 KB of flash, or about 9.3 KB with `ARGH_NO_COMMANDS` and `ARGH_NO_SUGGEST` (see [BENCHMARKS.md](BENCHMARKS.md#microcontrollers)). If you need fractions, a [custom type](#your-own-value-types) that parses fixed-point values costs far less.
+- **RAM:** the parser lives on the stack or wherever you put it: about 164 bytes on a 32-bit MCU plus 28 bytes per builder option. Set `ARGH_BUILDER_CAP` to what you use, or to 0 with `static const` tables, which stay in flash.
+
+With `ARGH_NO_STDIO` alone, doubles in help are shown with up to 6 decimals, and very large or very small ones are left out.
 
 ### Parsing rules
 
@@ -445,6 +468,7 @@ Define before including `argh.h`:
 | `ARGH_NO_SUGGEST`  |         | Define to remove "did you mean" suggestions (about 0.8 KB)     |
 | `ARGH_NO_COMMANDS` |         | Define to remove commands (about 2.6 KB) if you don't use them |
 | `ARGH_NO_STDIO`    |         | Define to build without `<stdio.h>`, for firmware (see below)  |
+| `ARGH_NO_FLOAT`    |         | Define to remove `argh_double` and all floating point          |
 
 Mistakes in the definitions, such as two options with the same name or a missing variable, are reported by `argh_parse` as `ARGH_E_CONFIG`. The checks for duplicate names and for the command tree run in builds without `NDEBUG`.
 
@@ -543,7 +567,7 @@ Three complete programs in [examples/](examples), each a real kind of tool:
 
 Planned for upcoming versions:
 
-- **A reduced build for microcontrollers** (no stdio, no help text) arrives in v0.4. Today argh adds 14 to 18 KB of code and text on Linux, depending on the features you keep (see [Configuration](#configuration)).
+- **Help and error text cannot be removed.** On a microcontroller argh adds about 9 to 11 KB of flash, strings included (see [Microcontrollers](#microcontrollers)).
 - Floating-point values follow the C locale's decimal separator, like `strtod`.
 
 ## Benchmarks

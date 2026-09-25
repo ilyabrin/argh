@@ -41,13 +41,17 @@ int main(void)
     char a0[] = "fw", a1[] = "--rate", a2[] = "115200", a3[] = "--help";
     char *argv[] = {a0, a1, a2, a3, NULL};
     long rate = 9600;
+#ifndef ARGH_NO_FLOAT
     double gain = 0.25;
+#endif
     int fails = 0;
 
     argh_parser p;
     argh_init(&p, "fw", "Firmware shell");
     argh_long(&p, 'r', "rate", &rate, "Baud rate");
+#ifndef ARGH_NO_FLOAT
     argh_double(&p, 'g', "gain", &gain, "Input gain");
+#endif
 
     /* The default writer discards output: nothing to check but no crash */
     fails += check(!argh_parse(&p, 4, argv) && argh_exit_code(&p) == 0, 1);
@@ -55,10 +59,14 @@ int main(void)
     argh_init(&p, "fw", "Firmware shell");
     argh_set_writer(&p, to_buffer, NULL);
     argh_long(&p, 'r', "rate", &rate, "Baud rate");
+#ifndef ARGH_NO_FLOAT
     argh_double(&p, 'g', "gain", &gain, "Input gain");
+#endif
     fails += check(!argh_parse(&p, 4, argv), 2);
     fails += check(strstr(out, "Baud rate (default: 9600)") != NULL, 4);
+#ifndef ARGH_NO_FLOAT
     fails += check(strstr(out, "Input gain (default: 0.25)") != NULL, 8);
+#endif
 
     out_len = 0;
     out[0] = '\0';
