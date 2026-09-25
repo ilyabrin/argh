@@ -4,7 +4,9 @@
  * Any use of printf-family functions left in argh.h fails this build.
  */
 
+#ifndef ARGH_NO_STDIO
 #define ARGH_NO_STDIO
+#endif
 #define ARGH_IMPLEMENTATION
 #include "../argh.h"
 
