@@ -691,6 +691,8 @@ Time to set up a parser with 30 options and parse 17 arguments, release builds (
 
 argh makes zero heap allocations. Details, memory, code size and the method: [BENCHMARKS.md](BENCHMARKS.md). Run them with `make bench`.
 
+How argh compares with getopt_long, cargs and argparse in features, strictness, speed and size: [COMPARISON.md](COMPARISON.md).
+
 ## Running the tests
 
 ```sh
