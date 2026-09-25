@@ -68,8 +68,22 @@ Read this one with care:
 - **Each version is bigger than the last** because it does more. v0.2 added formatted help, detailed errors, enums, lists and definition checks; v0.3 added commands, suggestions, custom types and rules. On Linux, `size` counts read-only data as text, so the help and error strings are part of these numbers.
 - **Unused features cost less than they look.** The rule checker is only linked when `argh_rules` is called, and the two `ARGH_NO_*` flags remove commands and suggestions.
 - **getopt_long is only counted where it is linked statically**, as in MinGW. On Linux it lives in the shared C library and adds almost nothing to your binary, so for desktop Linux getopt is the smaller choice. On MinGW it pulls in error-printing and locale code.
-- A build for microcontrollers, without stdio and help text, is planned for v0.4. It will be measured with a static bare-metal ARM build.
 - macOS is not measured: its `size` tool reports page-aligned segments, which hides differences of a few KB.
+
+## Microcontrollers
+
+Flash added to a bare-metal firmware shell command with three options, compared with the same firmware without a parser. `arm-none-eabi-gcc` 13.2, newlib-nano, `-Os -ffunction-sections -fdata-sections -Wl,--gc-sections`, `-DNDEBUG -DARGH_NO_STDIO`. CI fails if a build goes over its budget.
+
+| Build                                                        | Cortex-M0 | Cortex-M4 | Budget  |
+| ------------------------------------------------------------ | --------: | --------: | ------: |
+| `ARGH_NO_FLOAT`                                              |   11.0 KB |   11.2 KB | 12.0 KB |
+| `ARGH_NO_FLOAT ARGH_NO_COMMANDS ARGH_NO_SUGGEST`             |    9.2 KB |    9.4 KB | 10.0 KB |
+| with `argh_double` (`ARGH_NO_STDIO` only)                    |   38.0 KB |   31.6 KB |       - |
+
+- **Numbers include everything linked because of argh**: help and error strings, and the C library functions it calls (`strtol`, `strcmp` and others).
+- **Why doubles cost 27 KB:** newlib's `strtod` brings its float parser and soft-float arithmetic, and through an internal `assert` also `fprintf`. `ARGH_NO_FLOAT` removes `argh_double` so none of it is linked.
+- **RAM:** `sizeof(argh_parser)` is 164 bytes plus 28 bytes per builder option (`ARGH_BUILDER_CAP`, default 32: 1,060 bytes in total). With tables only, set `ARGH_BUILDER_CAP` to 0.
+- Run it yourself: `make size-arm` ([bench/size_arm.sh](bench/size_arm.sh), [bench/size_fw.c](bench/size_fw.c)).
 
 ## Method
 

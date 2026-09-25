@@ -34,12 +34,20 @@ jobs:
           make CC=clang test
           CFLAGS="-std=c99 -Wall -Wextra -Wpedantic -Werror -O1 -g
           -fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=all"
-      - name: Reduced release build (ARGH_NO_COMMANDS, ARGH_NO_SUGGEST, ARGH_NO_STDIO, NDEBUG)
+      - name: Reduced release build (ARGH_NO_COMMANDS, ARGH_NO_SUGGEST, ARGH_NO_STDIO, ARGH_NO_FLOAT, NDEBUG)
         run: >
           make clean && make CC=clang test
           CFLAGS="-std=c99 -Wall -Wextra -Wpedantic -Werror -O1 -g
-          -DARGH_NO_COMMANDS -DARGH_NO_SUGGEST -DARGH_NO_STDIO -DNDEBUG
+          -DARGH_NO_COMMANDS -DARGH_NO_SUGGEST -DARGH_NO_STDIO -DARGH_NO_FLOAT -DNDEBUG
           -fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=all"
+
+  arm:
+    name: arm / cortex-m0, m4 / flash budget
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: sudo apt-get update && sudo apt-get install -y gcc-arm-none-eabi libnewlib-arm-none-eabi
+      - run: make size-arm
 
   mingw:
     name: windows / mingw gcc

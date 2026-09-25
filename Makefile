@@ -6,6 +6,7 @@
 #   make examples   build the examples in examples/
 #   make smoke      run the examples and check their output
 #   make bench      run benchmarks (speed and code size)
+#   make size-arm   flash added to bare-metal ARM firmware (needs arm-none-eabi-gcc)
 #   make cxx        check that argh.h compiles as C++
 #   make CC=clang   use a different compiler
 
@@ -29,7 +30,7 @@ endif
 EXAMPLES = examples/wc$(EXE) examples/logship$(EXE) examples/pkg/pkg$(EXE)
 PKG_SRC  = examples/pkg/main.c examples/pkg/install.c examples/pkg/remote.c examples/pkg/exec.c
 
-.PHONY: all test examples smoke bench cxx clean
+.PHONY: all test examples smoke bench size-arm cxx clean
 
 all: test_argh$(EXE) $(EXAMPLES)
 
@@ -65,6 +66,9 @@ bench: bench_parse$(EXE)
 
 bench_parse$(EXE): bench/bench_parse.c argh.h
 	$(CC) -std=c11 -O2 -DNDEBUG -Wall -Wextra -o $@ bench/bench_parse.c
+
+size-arm:
+	sh bench/size_arm.sh
 
 cxx: tests/cxx_check.cpp argh.h
 	$(CXX) -std=c++11 -Wall -Wextra -Wpedantic -Werror -o cxx_check$(EXE) tests/cxx_check.cpp
