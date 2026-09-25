@@ -34,11 +34,11 @@ jobs:
           make CC=clang test
           CFLAGS="-std=c99 -Wall -Wextra -Wpedantic -Werror -O1 -g
           -fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=all"
-      - name: Reduced release build (ARGH_NO_COMMANDS, ARGH_NO_SUGGEST, NDEBUG)
+      - name: Reduced release build (ARGH_NO_COMMANDS, ARGH_NO_SUGGEST, ARGH_NO_STDIO, NDEBUG)
         run: >
           make clean && make CC=clang test
           CFLAGS="-std=c99 -Wall -Wextra -Wpedantic -Werror -O1 -g
-          -DARGH_NO_COMMANDS -DARGH_NO_SUGGEST -DNDEBUG
+          -DARGH_NO_COMMANDS -DARGH_NO_SUGGEST -DARGH_NO_STDIO -DNDEBUG
           -fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=all"
 
   mingw:
@@ -62,6 +62,9 @@ jobs:
           call "%VSDIR%\VC\Auxiliary\Build\vcvars64.bat" || exit /b 1
           cl /nologo /W4 /std:c11 tests\test_argh.c /Fe:test_argh.exe || exit /b 1
           test_argh.exe || exit /b 1
+          cl /nologo /W4 /std:c11 tests
+ostdio_check.c /Fe:nostdio_check.exe || exit /b 1
+          nostdio_check.exe || exit /b 1
           cl /nologo /W4 /WX /std:c++17 /EHsc tests\cxx_check.cpp /Fe:cxx_check.exe || exit /b 1
           cl /nologo /W4 /std:c11 examples\wc.c /Fe:examples\wc.exe || exit /b 1
           cl /nologo /W4 /std:c11 examples\logship.c /Fe:examples\logship.exe || exit /b 1

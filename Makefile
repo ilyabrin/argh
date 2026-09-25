@@ -2,7 +2,7 @@
 # Works with GCC, Clang and MinGW on Linux, macOS and Windows.
 #
 #   make            build tests and examples
-#   make test       build and run tests
+#   make test       build and run tests, including a build without stdio
 #   make examples   build the examples in examples/
 #   make smoke      run the examples and check their output
 #   make bench      run benchmarks (speed and code size)
@@ -33,11 +33,16 @@ PKG_SRC  = examples/pkg/main.c examples/pkg/install.c examples/pkg/remote.c exam
 
 all: test_argh$(EXE) $(EXAMPLES)
 
-test: test_argh$(EXE)
+test: test_argh$(EXE) nostdio_check$(EXE)
 	./test_argh$(EXE)
+	./nostdio_check$(EXE)
 
 test_argh$(EXE): tests/test_argh.c argh.h
 	$(CC) $(CFLAGS) -o $@ tests/test_argh.c $(LDFLAGS)
+
+# argh.h built without <stdio.h>, as firmware would use it
+nostdio_check$(EXE): tests/nostdio_check.c argh.h
+	$(CC) $(CFLAGS) -o $@ tests/nostdio_check.c $(LDFLAGS)
 
 examples: $(EXAMPLES)
 
@@ -65,4 +70,4 @@ cxx: tests/cxx_check.cpp argh.h
 	$(CXX) -std=c++11 -Wall -Wextra -Wpedantic -Werror -o cxx_check$(EXE) tests/cxx_check.cpp
 
 clean:
-	-$(RM) $(call fixpath,test_argh$(EXE) bench_parse$(EXE) cxx_check$(EXE) $(EXAMPLES))
+	-$(RM) $(call fixpath,test_argh$(EXE) nostdio_check$(EXE) bench_parse$(EXE) cxx_check$(EXE) $(EXAMPLES))

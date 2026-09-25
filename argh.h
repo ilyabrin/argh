@@ -35,6 +35,7 @@
  *   ARGH_MAX_DEPTH    levels of nested commands (4)
  *   ARGH_NO_SUGGEST   no "did you mean" suggestions in error messages
  *   ARGH_NO_COMMANDS  no commands: smaller code for programs without them
+ *   ARGH_NO_STDIO     no <stdio.h>: output goes only to argh_set_writer()
  *
  * LICENSE: MIT (see end of file)
  */
@@ -285,7 +286,8 @@ extern "C"
     /* ARGH_POSIX, ARGH_NO_AUTO_HELP */
     void argh_set_flags(argh_parser *p, unsigned flags);
 
-    /* Redirects all output. The default writes to stdout and stderr. */
+    /* Redirects all output. The default writes to stdout and stderr, or
+     * discards it with ARGH_NO_STDIO. */
     void argh_set_writer(argh_parser *p, argh_write_fn write, void *ctx);
 
     /* Adds an option table ending with ARGH_END. Tables and builder calls can
@@ -478,7 +480,9 @@ extern "C"
 #include <errno.h>
 #include <limits.h>
 #include <math.h>
+#ifndef ARGH_NO_STDIO
 #include <stdio.h>
+#endif
 #include <stdlib.h>
 #include <string.h>
 
@@ -572,7 +576,13 @@ extern "C"
     static void argh__stdio_write(void *ctx, int to_stderr, const char *text, size_t len)
     {
         (void)ctx;
+#ifdef ARGH_NO_STDIO
+        (void)to_stderr;
+        (void)text;
+        (void)len;
+#else
         fwrite(text, 1, len, to_stderr ? stderr : stdout);
+#endif
     }
 
     static void argh__outn(const argh_parser *p, int err, const char *s, size_t n)
@@ -629,6 +639,67 @@ extern "C"
     {
         argh__sb_putn(b, &c, 1);
     }
+
+    /* Decimal text of v; buf needs 24 bytes. Avoids pulling in printf. */
+    static const char *argh__fmt_long(char *buf, long v)
+    {
+        char *s = buf + 23;
+        /* Negate as unsigned so LONG_MIN works */
+        unsigned long u = v < 0 ? 0UL - (unsigned long)v : (unsigned long)v;
+        *s = '\0';
+        do
+            *--s = (char)('0' + u % 10);
+        while (u /= 10);
+        if (v < 0)
+            *--s = '-';
+        return s;
+    }
+
+#ifdef ARGH_NO_STDIO
+    /* A short form of %g for help defaults: up to 6 decimals, trailing zeros
+     * dropped. Values it cannot show plainly give NULL (no default shown). */
+    static const char *argh__fmt_double(char *buf, double v)
+    {
+        char *s = buf;
+        double a = v < 0 ? -v : v;
+        unsigned long ip;
+        unsigned long frac;
+        int i;
+
+        if (!isfinite(v) || a >= 1e9 || (a != 0 && a < 1e-6))
+            return NULL;
+        ip = (unsigned long)a;
+        frac = (unsigned long)((a - (double)ip) * 1e6 + 0.5);
+        if (frac >= 1000000UL)
+        {
+            ip++;
+            frac = 0;
+        }
+        if (v < 0 && (ip || frac))
+            *s++ = '-';
+        {
+            char digits[24];
+            const char *d = argh__fmt_long(digits, (long)ip);
+            size_t n = strlen(d);
+            memcpy(s, d, n);
+            s += n;
+        }
+        if (frac)
+        {
+            *s++ = '.';
+            for (i = 5; i >= 0; i--)
+            {
+                s[i] = (char)('0' + frac % 10);
+                frac /= 10;
+            }
+            for (i = 6; s[i - 1] == '0'; i--)
+                ;
+            s += i;
+        }
+        *s = '\0';
+        return buf;
+    }
+#endif
 
     /* ------------------------------------------------------------------------
      * Option lookup
@@ -2040,11 +2111,10 @@ extern "C"
         case ARGH_E_TOO_MANY_VALUES:
         {
             char num[24];
-            snprintf(num, sizeof(num), "%d", ((const argh_values *)e->opt->target)->capacity);
             argh__sb_put(&b, "too many values for '");
             argh__sb_opt_name(&b, e->opt, e->short_name);
             argh__sb_put(&b, "' (at most ");
-            argh__sb_put(&b, num);
+            argh__sb_put(&b, argh__fmt_long(num, ((const argh_values *)e->opt->target)->capacity));
             argh__sb_char(&b, ')');
             break;
         }
@@ -2232,16 +2302,18 @@ extern "C"
         switch (o->kind)
         {
         case ARGH_K_INT:
-            snprintf(num, sizeof(num), "%d", *(const int *)o->target);
-            text = num;
+            text = argh__fmt_long(num, *(const int *)o->target);
             break;
         case ARGH_K_LONG:
-            snprintf(num, sizeof(num), "%ld", *(const long *)o->target);
-            text = num;
+            text = argh__fmt_long(num, *(const long *)o->target);
             break;
         case ARGH_K_DOUBLE:
+#ifdef ARGH_NO_STDIO
+            text = argh__fmt_double(num, *(const double *)o->target);
+#else
             snprintf(num, sizeof(num), "%g", *(const double *)o->target);
             text = num;
+#endif
             break;
         case ARGH_K_STRING:
             text = *(const char *const *)o->target;

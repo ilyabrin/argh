@@ -9,6 +9,7 @@
 #define ARGH_IMPLEMENTATION
 #include "../argh.h"
 
+#include <limits.h>
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
@@ -895,6 +896,30 @@ TEST(test_help_wraps_long_entries)
                        "  -b, --brief    Short one\n"
                        "  -n, --number-of-parallel-jobs <count>\n"
                        "                 Long one (default: 0)\n") != NULL);
+}
+
+/* Defaults are formatted without printf, so ARGH_NO_STDIO shows the same */
+TEST(test_help_number_defaults)
+{
+    ARGV("--help");
+    int i = -42;
+    long l = LONG_MIN;
+    double d1 = 0.5, d2 = 2.0, d3 = -1.25;
+    argh_parser p;
+    setup(&p);
+    argh_int(&p, 0, "int", &i, "I");
+    argh_long(&p, 0, "long", &l, "L");
+    argh_double(&p, 0, "half", &d1, "D1");
+    argh_double(&p, 0, "two", &d2, "D2");
+    argh_double(&p, 0, "neg", &d3, "D3");
+
+    ASSERT_FALSE(argh_parse(&p, argc, argv));
+    ASSERT_TRUE(strstr(out_text, "I (default: -42)\n") != NULL);
+    ASSERT_TRUE(strstr(out_text, LONG_MIN == -2147483647L - 1 ? "L (default: -2147483648)\n"
+                                                                 : "L (default: -9223372036854775808)\n") != NULL);
+    ASSERT_TRUE(strstr(out_text, "D1 (default: 0.5)\n") != NULL);
+    ASSERT_TRUE(strstr(out_text, "D2 (default: 2)\n") != NULL);
+    ASSERT_TRUE(strstr(out_text, "D3 (default: -1.25)\n") != NULL);
 }
 
 TEST(test_help_output)
@@ -2130,6 +2155,7 @@ int main(void)
 
     RUN_TEST(test_help_output);
     RUN_TEST(test_help_wraps_long_entries);
+    RUN_TEST(test_help_number_defaults);
     RUN_TEST(test_help_in_cluster);
     RUN_TEST(test_help_wins_over_errors);
     RUN_TEST(test_help_as_value_is_a_value);

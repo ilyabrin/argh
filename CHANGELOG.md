@@ -6,6 +6,14 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+### Added
+
+- `ARGH_NO_STDIO` builds argh.h without `<stdio.h>` and the printf family, for firmware. Output goes only to the writer set with `argh_set_writer()`, and is discarded without one.
+
+### Changed
+
+- Integers in help defaults and error messages are formatted without `snprintf`.
+
 ## [0.3.1] - 2026-09-25
 
 ### Added
